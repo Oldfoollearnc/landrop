@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>局域网传信</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app" data-mode="compact" data-view="connect">
+  <header class="titlebar">
+    <div class="tb-left">
+      <button class="ibtn btn-back" id="btnBack" title="返回" hidden>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9.8 3.6L5.4 8l4.4 4.4"/>
+        </svg>
+      </button>
+      <div class="brand" id="brand">
+        <span class="dot" id="dot"></span>
+        <span class="name">局域网传信</span>
+      </div>
+      <span class="tb-title" id="tbTitle" hidden>设置</span>
+    </div>
+    <div class="actions">
+      <button class="ibtn" id="btnSearch" title="搜索消息" hidden>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+          <circle cx="7.2" cy="7.2" r="4.4"/><path d="M10.6 10.6l2.6 2.6"/>
+        </svg>
+      </button>
+      <button class="ibtn" id="btnGear" title="设置" hidden>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+          <circle cx="8" cy="8" r="2.1"/>
+          <path d="M8 2.1l.95 1.7 1.9-.35.4 1.9 1.65 1-.95 1.65.95 1.65-1.65 1-.4 1.9-1.9-.35L8 13.9l-.95-1.7-1.9.35-.4-1.9-1.65-1 .95-1.65-.95-1.65 1.65-1 .4-1.9 1.9.35z" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button class="ibtn" id="btnPin" title="取消置顶">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+          <path d="M6.3 2.5h3.4l-.45 3.7 2 2.2v.85H4.75v-.85l2-2.2z"/><path d="M8 9.4v4.1" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button class="ibtn" id="btnMax" title="最大化">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1.8"/>
+        </svg>
+      </button>
+      <button class="ibtn danger" id="btnClose" title="收起到托盘">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+          <path d="M4.8 4.8l6.4 6.4M11.2 4.8l-6.4 6.4"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="stage">
+    <!-- ========== 扫码连接 ========== -->
+    <section class="view connect-view" id="viewConnect">
+      <span class="qr-halo"></span>
+      <div class="qr-shell">
+        <img class="qr-img" id="qrBig" alt="扫码连接">
+      </div>
+      <p class="qr-hint" id="qrHint">手机相机扫码，即刻连接</p>
+    </section>
+
+    <!-- ========== 聊天 ========== -->
+    <section class="view chat-view" id="viewChat">
+      <div class="connbar" id="connbar">
+        <span class="cbar-dot"></span>
+        <span class="cbar-text">手机已断开</span>
+        <button class="cbar-btn" id="connbarBtn">扫码重连</button>
+      </div>
+
+      <div class="searchbar" id="searchbar">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+          <circle cx="7.2" cy="7.2" r="4.4"/><path d="M10.6 10.6l2.6 2.6"/>
+        </svg>
+        <input id="searchInput" type="text" placeholder="搜索最近 500 条" spellcheck="false">
+        <button class="ibtn" id="searchClose" title="关闭搜索">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+            <path d="M5 5l6 6M11 5l-6 6"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="chat-wrap">
+        <main class="chat" id="chat"></main>
+        <button class="jump" id="jumpPill" hidden>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 3.5v9M4.2 8.7L8 12.5l3.8-3.8"/>
+          </svg>
+          <b id="jumpCount">1</b> 条新消息
+        </button>
+      </div>
+
+      <footer class="composer">
+        <div class="cbox">
+          <textarea id="input" rows="1" placeholder="发消息，或粘贴图片 / 拖入文件"></textarea>
+          <button class="ibtn" id="btnImg" title="发送图片">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
+              <rect x="2.6" y="3.6" width="10.8" height="8.8" rx="2"/>
+              <circle cx="6" cy="6.7" r="0.95"/><path d="M3 11.1l2.9-2.5 2.3 1.9 1.9-1.5 2.9 2.3"/>
+            </svg>
+          </button>
+          <button class="ibtn" id="btnFile" title="发送文件">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+              <path d="M9.6 4.7L5 9.3a2.05 2.05 0 0 0 2.9 2.9l4.5-4.5a3.05 3.05 0 0 0-4.3-4.3L3.7 7.8"/>
+            </svg>
+          </button>
+        </div>
+        <button class="send" id="btnSend" disabled title="发送 (Enter)">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3.4 8h9M8.8 4.2L12.6 8l-3.8 3.8"/>
+          </svg>
+        </button>
+      </footer>
+
+      <div class="multibar" id="multibar" hidden>
+        <span class="mb-count"><b id="multiCount">0</b> 已选</span>
+        <button class="mb-btn" id="multiCancel">取消</button>
+        <button class="mb-btn danger" id="multiDel">删除</button>
+      </div>
+    </section>
+
+    <!-- ========== 设置 ========== -->
+    <section class="view settings-view" id="viewSettings">
+      <div class="settings" id="settingsScroll">
+        <div class="sgroup">
+          <div class="sgroup-title">外观</div>
+          <div class="srow">
+            <span class="slabel">主题</span>
+            <div class="seg" id="setTheme">
+              <button data-v="dark">深色</button>
+              <button data-v="light">蓝白</button>
+            </div>
+          </div>
+          <div class="srow">
+            <span class="slabel">提示音</span>
+            <button class="switch" id="setSound"></button>
+          </div>
+          <div class="srow">
+            <span class="slabel">新消息通知</span>
+            <button class="switch" id="setNotify"></button>
+          </div>
+        </div>
+
+        <div class="sgroup">
+          <div class="sgroup-title">接收</div>
+          <div class="srow">
+            <span class="slabel">保存目录</span>
+            <span class="sval mono" id="setSaveDir"></span>
+            <button class="chip" id="setSaveDirBtn">更改</button>
+          </div>
+          <div class="srow">
+            <span class="slabel">打开保存目录</span>
+            <button class="chip" id="setOpenDir">打开</button>
+          </div>
+        </div>
+
+        <div class="sgroup">
+          <div class="sgroup-title">连接</div>
+          <div class="srow">
+            <span class="slabel">连接地址</span>
+            <span class="sval mono" id="setUrl"></span>
+            <button class="chip" id="setCopyUrl">复制</button>
+          </div>
+          <div class="srow">
+            <span class="slabel">网卡</span>
+            <select id="setNic"></select>
+          </div>
+          <div class="srow">
+            <span class="slabel">端口</span>
+            <span class="sval mono" id="setPort"></span>
+          </div>
+          <div class="srow">
+            <span class="slabel">防火墙</span>
+            <span class="sval" id="setFwState">未知</span>
+            <button class="chip" id="setFw">放通</button>
+          </div>
+          <div class="srow">
+            <span class="slabel">重置连接令牌<em>已连设备需重新扫码</em></span>
+            <button class="chip danger" id="setReset">重置</button>
+          </div>
+        </div>
+
+        <div class="sgroup">
+          <div class="sgroup-title">常规</div>
+          <div class="srow">
+            <span class="slabel">开机启动</span>
+            <button class="switch" id="setAuto"></button>
+          </div>
+        </div>
+
+        <div class="sgroup">
+          <div class="sgroup-title">数据</div>
+          <div class="srow">
+            <span class="slabel">清空聊天记录<em>不影响已保存的文件</em></span>
+            <button class="chip danger" id="setClear">清空</button>
+          </div>
+          <div class="srow">
+            <span class="slabel">打开数据目录</span>
+            <button class="chip" id="setDataDir">打开</button>
+          </div>
+        </div>
+
+        <div class="sgroup">
+          <div class="sgroup-title">关于</div>
+          <div class="srow">
+            <span class="slabel">版本</span>
+            <span class="sval mono" id="setVer">—</span>
+          </div>
+          <p class="snote">同一 Wi-Fi 下扫码即用，文字、图片、文件只在局域网内传输，不经过外网。</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="confirmbar" id="confirm" hidden>
+    <span id="confirmText">确定？</span>
+    <button class="mb-btn" id="confirmCancel">取消</button>
+    <button class="mb-btn danger" id="confirmOk">确定</button>
+  </div>
+
+  <div class="flash" id="flash">
+    <span class="flash-ring"></span>
+    <svg class="flash-check" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M15 25.5l6.5 6.5L33.5 18"/>
+    </svg>
+    <span class="flash-name" id="flashName"></span>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <div class="ctx" id="ctx"></div>
+  <div class="lightbox" id="lightbox"><img id="lightboxImg" alt="预览"></div>
+  <div class="drop" id="drop"><div class="inner">松手即发送</div></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

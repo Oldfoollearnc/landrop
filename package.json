@@ -1,0 +1,23 @@
+{
+  "name": "landrop",
+  "version": "1.0.0",
+  "description": "LAN file & text bridge between phone and PC",
+  "main": "src/main/main.js",
+  "author": "LanDrop",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "icon": "node tools/gen-icon.js",
+    "dist": "electron-builder --win portable",
+    "dist:dir": "electron-builder --win --dir"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "28.3.3",
+    "electron-builder": "^24.13.3"
+  }
+}

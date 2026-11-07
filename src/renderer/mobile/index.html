@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="mono">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss:">
+<meta name="theme-color" content="#0a0a0b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>局域网传信</title>
+<link rel="manifest" href="/m/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/m/icon.png">
+<link rel="stylesheet" href="/m/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="st"><i class="dot" id="dot"></i><span id="conn">连接中…</span></div>
+  <div class="peer" id="peer">电脑</div>
+</header>
+
+<main id="chat" class="chat"></main>
+
+<div class="composer">
+  <button class="circle" id="plus" aria-label="添加">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+      <path d="M10 5v10M5 10h10"/>
+    </svg>
+  </button>
+  <div class="box"><textarea id="input" rows="1" placeholder="输入消息…"></textarea></div>
+  <button class="circle send" id="send" aria-label="发送" disabled>
+    <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 10h11M10.5 5.5L15 10l-4.5 4.5"/>
+    </svg>
+  </button>
+</div>
+
+<div class="sheet-wrap" id="sheetWrap">
+  <div class="sheet" id="sheet"></div>
+</div>
+
+<div class="viewer" id="viewer"><img alt="预览"></div>
+
+<input type="file" id="photoInput" accept="image/*" multiple hidden>
+<input type="file" id="cameraInput" accept="image/*" capture="environment" hidden>
+<input type="file" id="fileInput" multiple hidden>
+
+<script src="/m/app.js"></script>
+</body>
+</html>

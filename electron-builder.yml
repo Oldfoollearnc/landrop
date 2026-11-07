@@ -1,0 +1,28 @@
+appId: com.landrop.app
+productName: LanDrop
+copyright: LanDrop
+
+directories:
+  output: dist
+  buildResources: assets
+
+electronDist: node_modules/electron/dist
+npmRebuild: false
+
+files:
+  - package.json
+  - src/**/*
+  - assets/**
+
+asar: true
+
+win:
+  icon: assets/icon.ico
+  target:
+    - target: portable
+      arch:
+        - x64
+
+portable:
+  artifactName: LanDrop.exe
+  unpackDirName: LanDrop
