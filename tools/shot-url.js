@@ -21,7 +21,7 @@ app.whenReady().then(async () => {
   await win.loadURL(URL_);
   await new Promise((r) => setTimeout(r, 1600));
   if (process.env.SHOT_JS) {
-    await win.webContents.executeJavaScript(process.env.SHOT_JS);
+    const r = await win.webContents.executeJavaScript(process.env.SHOT_JS); console.log("JS_RESULT", r);
     await new Promise((r) => setTimeout(r, 700));
   }
   const img = await win.capturePage();

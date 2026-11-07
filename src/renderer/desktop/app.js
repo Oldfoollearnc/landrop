@@ -33,6 +33,7 @@ const nodes = new Map();
 let lastTs = 0;
 let lastFrom = '';
 let stick = true;
+let syncing = false;
 let pendingNew = 0;
 let searchMode = false;
 let searchQuery = '';
@@ -168,7 +169,8 @@ function updateChrome() {
   $('brand').hidden = inSettings || inConnect;
   $('tbTitle').hidden = !inSettings;
   $('btnBack').hidden = !inSettings;
-  $('btnGear').hidden = !(isFull && view === 'chat');
+  // 设置入口在两种尺寸、所有视图都保留；已在设置页时不需要重复入口
+  $('btnGear').hidden = inSettings;
   $('btnSearch').hidden = !(isFull && view === 'chat');
   $('dot').classList.toggle('on', devices.length > 0);
 }
@@ -374,6 +376,8 @@ function nearBottom() {
 }
 
 chat.addEventListener('scroll', () => {
+  // 程序化滚动期间不要把 stick 重算成 false，否则后续消息不再跟底
+  if (syncing) return;
   stick = nearBottom();
   if (stick && pendingNew) {
     pendingNew = 0;
@@ -383,7 +387,14 @@ chat.addEventListener('scroll', () => {
 
 function scrollBottom(force) {
   if (force) stick = true;
-  if (stick) chat.scrollTop = chat.scrollHeight;
+  if (!stick) return;
+  syncing = true;
+  chat.scrollTop = chat.scrollHeight;
+  clearTimeout(scrollBottom._t);
+  scrollBottom._t = setTimeout(() => {
+    syncing = false;
+    stick = nearBottom();
+  }, 80);
 }
 
 function addSeparator(ts) {
@@ -413,8 +424,9 @@ function appendMessage(m) {
   byId.set(m.id, m);
   lastFrom = m.from;
 
-  if (wasNear) scrollBottom(true);
-  else if (!rendering && m.from === 'phone') {
+  // 自己发出的消息无条件跟到底；对方消息只在本来就在底部时才跟随
+  if (m.from === 'pc' || wasNear) scrollBottom(true);
+  else if (!rendering) {
     pendingNew += 1;
     $('jumpCount').textContent = String(pendingNew);
     $('jumpPill').hidden = false;
@@ -617,6 +629,8 @@ chat.addEventListener('contextmenu', (e) => {
   if (m.kind === 'text') items.push({ label: '复制文字', run: () => handleAction('copy', m) });
   if (m.kind !== 'text' && m.path) {
     items.push({ label: '打开', run: () => handleAction('open', m) });
+    if (m.kind === 'image') items.push({ label: '复制图片', run: () => handleAction('copyimg', m) });
+    else items.push({ label: '显示所在文件夹', run: () => handleAction('reveal', m) });
     items.push({ label: '另存为', run: () => handleAction('save', m) });
   }
   items.push({ sep: true });
@@ -825,7 +839,6 @@ function applyMode(mode) {
   $('btnMax').innerHTML = isFull ? ICON.restore : ICON.max;
   $('btnMax').title = isFull ? '还原小窗' : '最大化';
   if (!isFull && searchMode) closeSearch();
-  if (!isFull && view === 'settings') setView(targetView());
   updateChrome();
   setTimeout(() => scrollBottom(true), 140);
 }
@@ -862,6 +875,9 @@ function fillSettings() {
   $('setPort').textContent = state.port ? String(state.port) : '—';
   $('setVer').textContent = state.version || '—';
   $('setFwState').textContent = state.firewall ? '已放通' : '未放通';
+  $('setCrypto').textContent = state.locked
+    ? '已锁定，原文件已保留'
+    : (state.encrypted ? '已加密（AES-256-GCM）' : '未启用，当前环境不支持');
 
   const sel = $('setNic');
   sel.innerHTML = '';
@@ -974,7 +990,14 @@ $('connbarBtn').addEventListener('click', () => setView('connect'));
 $('jumpPill').addEventListener('click', () => {
   pendingNew = 0;
   $('jumpPill').hidden = true;
-  chat.scrollTop = chat.scrollHeight;
+  stick = true;
+  syncing = true;
+  chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' });
+  clearTimeout(scrollBottom._t);
+  scrollBottom._t = setTimeout(() => {
+    syncing = false;
+    stick = nearBottom();
+  }, 450);
 });
 
 document.addEventListener('keydown', (e) => {
@@ -1093,6 +1116,10 @@ function onEvent(p) {
   view = '';
   setView((!loaded.length && !devices.length) ? 'connect' : 'chat');
   appEl.classList.toggle('offline', devices.length === 0 && loaded.length > 0);
+
+  if (s.locked) {
+    setTimeout(() => toast('聊天记录无法解密，原文件已保留'), 900);
+  }
 
   api.onEvent(onEvent);
 })();

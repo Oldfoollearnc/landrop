@@ -1,7 +1,7 @@
 {
   "name": "landrop",
-  "version": "1.0.0",
-  "description": "LAN file & text bridge between phone and PC",
+  "version": "1.1.0",
+  "description": "Windows 局域网传信：手机扫码即连，免安装传文字、图片、文件",
   "main": "src/main/main.js",
   "author": "LanDrop",
   "license": "MIT",
@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "icon": "node tools/gen-icon.js",
-    "dist": "electron-builder --win portable",
+    "dist": "electron-builder --win portable nsis",
     "dist:dir": "electron-builder --win --dir"
   },
   "dependencies": {
