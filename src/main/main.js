@@ -9,6 +9,7 @@ const QRCode = require('qrcode');
 const config = require('./config');
 const netinfo = require('./netinfo');
 const { Store, kindOf } = require('./store');
+const { Vault } = require('./crypto');
 const { Uploads } = require('./uploads');
 const { LanServer, MIME } = require('./server');
 const autostart = require('./autostart');
@@ -30,6 +31,7 @@ let win = null;
 let tray = null;
 let server = null;
 let store = null;
+let vault = null;
 let uploads = null;
 let quitting = false;
 let isFull = false;
@@ -456,6 +458,8 @@ function statePayload() {
     nic: config.get('nic'),
     version: app.getVersion(),
     firewall: firewallOk,
+    encrypted: !!(vault && vault.enabled),
+    locked: !!(store && store.locked),
     pinned,
     isFull,
     unread,
@@ -616,7 +620,8 @@ async function boot() {
     console.error('[boot] saveDir', err.message);
   }
 
-  store = new Store(path.join(app.getPath('userData'), 'messages.jsonl')).load();
+  vault = new Vault(app.getPath('userData')).init();
+  store = new Store(path.join(app.getPath('userData'), 'messages.jsonl'), vault).load();
   uploads = new Uploads(() => config.get('saveDir'));
   server = new LanServer({ core, uploads, token: config.get('token') });
 

@@ -22,7 +22,19 @@ win:
     - target: portable
       arch:
         - x64
+    - target: nsis
+      arch:
+        - x64
 
 portable:
-  artifactName: LanDrop.exe
+  artifactName: LanDrop-${version}-Portable.exe
   unpackDirName: LanDrop
+
+nsis:
+  artifactName: LanDrop-${version}-Setup.exe
+  oneClick: true
+  perMachine: false
+  allowElevation: true
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  include: assets/installer.nsh

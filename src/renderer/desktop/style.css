@@ -165,6 +165,11 @@ html.theme-anim * {
   min-width: 0;
 }
 
+/* 标题栏是拖拽区，里面的按钮必须显式排除，否则点击被吞掉 */
+.tb-left .ibtn {
+  -webkit-app-region: no-drag;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -447,7 +452,6 @@ html.theme-anim * {
   padding: 16px 16px 18px;
   display: flex;
   flex-direction: column;
-  scroll-behavior: smooth;
 }
 
 .jump {
@@ -555,8 +559,9 @@ html.theme-anim * {
 
 .bubble img.thumb {
   display: block;
+  width: auto;
   max-width: 100%;
-  max-height: 260px;
+  max-height: min(240px, 40vh);
   border-radius: 15px;
   cursor: zoom-in;
   background: var(--surface-3);
@@ -1127,6 +1132,41 @@ select:focus {
   flex: 1;
   font-size: 12px;
   color: var(--ink-2);
+}
+
+/* 小窗下的设置页：取值太长会把按钮挤出去，改成上下两行 */
+@media (max-width: 430px) {
+  .settings {
+    padding: 6px 14px 76px;
+  }
+
+  .srow {
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    min-height: 0;
+    padding: 9px 0;
+  }
+
+  .slabel {
+    flex: 1 1 auto;
+  }
+
+  .sval {
+    order: 3;
+    width: 100%;
+    max-width: 100%;
+    text-align: left;
+    font-size: 11px;
+  }
+
+  select {
+    flex: 1;
+    max-width: 100%;
+  }
+
+  .snote {
+    font-size: 10.5px;
+  }
 }
 
 .chat-empty {

@@ -156,7 +156,8 @@ function append(m) {
   nodes.set(m.id, el);
   byId.set(m.id, m);
   lastFrom = m.from;
-  if (wasNear) pin(true);
+  // 自己发出的消息一定跟到底，对方消息只在本来就在底部时跟随
+  if (isMine(m) || wasNear) pin(true);
 }
 
 function upsert(m) {
