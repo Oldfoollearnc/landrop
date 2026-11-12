@@ -442,6 +442,7 @@ function appendMessage(m) {
     $('jumpPill').hidden = false;
   }
   if (m.from === 'phone') markSeen();
+  else markWaitingDownload(m);
 }
 
 let seenTimer = null;
@@ -1053,8 +1054,13 @@ function onDownload(p) {
   }
   const pct = p.total ? Math.min(100, Math.round((p.sent * 100) / p.total)) : 0;
   bar.querySelector('i').style.width = pct + '%';
-  bar.querySelector('span').textContent = p.done ? '手机已下载' : `手机下载中 ${pct}%`;
+  bar.querySelector('span').textContent = p.waiting
+    ? '等待手机下载'
+    : p.done
+      ? '手机已下载'
+      : `手机下载中 ${pct}%`;
   bar.classList.toggle('done', !!p.done);
+  bar.classList.toggle('waiting', !!p.waiting);
   if (p.done) {
     clearTimeout(dlTimers.get(p.id));
     dlTimers.set(p.id, setTimeout(() => {
@@ -1064,6 +1070,12 @@ function onDownload(p) {
       dlTimers.delete(p.id);
     }, 5000));
   }
+}
+
+function markWaitingDownload(m) {
+  if (!m || m.from !== 'pc' || m.status !== 'ok') return;
+  if (m.kind !== 'image' && m.kind !== 'file') return;
+  onDownload({ id: m.id, sent: 0, total: m.size || 0, done: false, waiting: true });
 }
 
 function onPresence(list) {  const had = devices.length;

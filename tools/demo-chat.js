@@ -14,6 +14,7 @@ const STATIC = {
   '/m/style.css': ['src/renderer/mobile/style.css', 'text/css; charset=utf-8'],
   '/m/manifest.webmanifest': ['src/renderer/mobile/manifest.webmanifest', 'application/manifest+json'],
   '/m/icon.png': ['assets/icon-192.png', 'image/png'],
+  '/m/stub.js': ['tools/bridge-stub.js', 'text/javascript; charset=utf-8'],
 };
 
 const now = Date.now();
@@ -72,6 +73,21 @@ function serve(res, rel, type) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  if (url.pathname === '/stub') {
+    // 把页面塞进一个伪造的原生桥，用来验收 App 内才有的下载/保存交互
+    fs.readFile(path.join(ROOT, 'src/renderer/mobile/index.html'), 'utf8', (err, html) => {
+      if (err) {
+        res.writeHead(500);
+        res.end('no html');
+        return;
+      }
+      const out = html.replace('<script src="/m/app.js"></script>',
+        '<script src="/m/stub.js"></script><script src="/m/app.js"></script>');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(out);
+    });
+    return;
+  }
   if (STATIC[url.pathname]) {
     const [rel, type] = STATIC[url.pathname];
     return serve(res, rel, type);

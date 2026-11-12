@@ -91,56 +91,32 @@ public class Bridge {
         }
     }
 
-    /** 保存聊天里的一条图片 / 文件：返回系统下载任务 id（空字符串表示走旧方式）。 */
+    /** 保存聊天里的一条图片 / 文件：返回下载 token（消息 id），供页面轮询进度。 */
     @JavascriptInterface
     public String saveMedia(String id, String name) {
         if (id == null || id.isEmpty()) return "";
-        long dl = Downloader.startDownload(activity, device, id, name);
-        if (dl > 0) return String.valueOf(dl);
-        // Android 9 及以下没有 DownloadManager 的公共目录写入，退回直接落盘
-        Downloader.save(activity, device, id, name, new Downloader.Callback() {
-            @Override
-            public void onDone(final boolean ok, final String msg) {
-                MainThread.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        Ui.toast(activity, msg);
-                    }
-                });
-            }
-        });
-        return "";
+        return DirectDownloads.start(activity, device, id, name);
     }
 
     @JavascriptInterface
-    public String downloadStatus(String dlId) {
-        try {
-            return Downloader.statusJson(activity, Long.parseLong(dlId));
-        } catch (Exception e) {
-            return "{\"state\":\"failed\"}";
-        }
+    public String downloadStatus(String token) {
+        return DirectDownloads.status(token);
     }
 
     @JavascriptInterface
-    public void openDownload(String dlId) {
-        try {
-            Downloader.open(activity, Long.parseLong(dlId));
-        } catch (Exception ignored) {
-        }
+    public void openDownload(String token) {
+        DirectDownloads.open(activity, token);
     }
 
     @JavascriptInterface
-    public void cancelDownload(String dlId) {
-        try {
-            Downloader.cancel(activity, Long.parseLong(dlId));
-            toast(activity.getString(R.string.download_canceled));
-        } catch (Exception ignored) {
-        }
+    public void cancelDownload(String token) {
+        DirectDownloads.cancel(token);
+        toast(activity.getString(R.string.download_canceled));
     }
 
     @JavascriptInterface
     public void openDownloads() {
-        Downloader.openDownloads(activity);
+        DirectDownloads.openDownloads(activity);
     }
 
     /** 调起系统分享面板，把聊天里的文件发到别的 App。 */

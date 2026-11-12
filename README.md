@@ -126,7 +126,7 @@
 
 ### Android
 
-产物：`dist/NearSend-Android-1.0.1.apk`（约 3.3 MB，已签名）
+产物：`dist/NearSend-Android-1.0.2.apk`（约 3.3 MB，已签名）
 
 - Android 7.0（API 24）及以上
 - 直接拷到手机安装；首次安装需要在系统里允许「安装未知来源应用」

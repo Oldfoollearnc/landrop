@@ -1406,15 +1406,19 @@
     if (done) {
       txt.textContent = '已保存';
     } else if (d.state === 'failed') {
-      txt.textContent = '下载失败';
+      txt.textContent = d.error ? '下载失败：' + d.error : '下载失败';
     } else if (d.state === 'paused') {
       txt.textContent = '已暂停';
     } else {
-      const pct = Math.round((d.pct || 0) * 100);
       const speed = d.speed > 1 ? ' · ' + fmtSize(d.speed) + '/s' : '';
-      const left = d.total > 0 ? d.total - (d.pct || 0) * d.total : 0;
-      const eta = d.speed > 1 && left > 0 ? ' · 剩 ' + Math.ceil(left / d.speed / 60) + ' 分' : '';
-      txt.textContent = `下载中 ${pct}%${speed}${eta}`;
+      if (!d.total || d.total <= 0) {
+        txt.textContent = '下载中 ' + fmtSize(d.bytes || 0) + speed;
+      } else {
+        const pct = Math.round((d.pct || 0) * 100);
+        const left = d.total - (d.bytes || 0);
+        const eta = d.speed > 1 && left > 0 ? ' · 剩 ' + Math.ceil(left / d.speed / 60) + ' 分' : '';
+        txt.textContent = '下载中 ' + pct + '%' + speed + eta;
+      }
     }
     wrap.appendChild(txt);
 
@@ -1527,9 +1531,11 @@
         rec.sent = sent;
         rec.at = now;
       }
+      rec.bytes = sent;
       rec.pct = total > 0 ? Math.min(1, sent / total) : 0;
       rec.total = total;
       rec.state = s.state === 'done' ? 'done' : s.state;
+      if (s.error) rec.error = String(s.error).slice(0, 60);
 
       if (s.state === 'done') {
         clearInterval(timer);
@@ -1541,28 +1547,6 @@
       }
       if (s.state === 'failed' || s.state === 'gone') {
         clearInterval(timer);
-        // 同名文件已存在（ERROR_FILE_ALREADY_EXISTS = 488）：带序号自动重试一次
-        if (s.reason === 488 && !rec.retried) {
-          const dot = String(m.name || '').lastIndexOf('.');
-          const suffix = dot > 0
-            ? m.name.slice(0, dot) + ' (2)' + m.name.slice(dot)
-            : (m.name || 'file') + ' (2)';
-          let again = '';
-          try {
-            again = window.NearSend.saveMedia(m.id, suffix);
-          } catch {
-            again = '';
-          }
-          if (again) {
-            state.dlIds.set(m.id, Number(again));
-            rec.dlId = Number(again);
-            rec.retried = true;
-            rec.state = 'running';
-            rec.pct = 0;
-            startDownloadPolling(m, Number(again));
-            return;
-          }
-        }
         updateDownloadUI(m);
         toast('下载失败，可重试');
         return;
@@ -1584,7 +1568,7 @@
         dlId = '';
       }
       if (dlId) {
-        startDownload(m, Number(dlId));
+        startDownload(m, dlId);
         return;
       }
       // Android 9 及以下走原生存盘，没有系统进度

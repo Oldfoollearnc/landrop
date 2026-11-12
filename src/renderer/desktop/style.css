@@ -1574,3 +1574,11 @@ select:focus {
 .dl span {
   white-space: nowrap;
 }
+
+.dl.waiting i {
+  background: var(--line-2);
+  opacity: 1;
+}
+.dl.waiting span {
+  color: var(--ink-3);
+}
