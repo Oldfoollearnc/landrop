@@ -1,0 +1,241 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">近传</string>
+    <string name="tagline">手机 ⇄ 电脑，局域网直传</string>
+    <string name="brand_sub">同一 Wi-Fi，不经过外网</string>
+
+    <string name="devices">我的电脑</string>
+    <string name="nearby">附近发现</string>
+    <string name="nearby_hint">正在查找同一网络中的电脑…</string>
+    <string name="nearby_none">没找到其它电脑。确认电脑端的「近传」正在运行，并且手机连的是同一个 Wi-Fi。</string>
+    <string name="nearby_searching">查找中</string>
+    <string name="nearby_count">%d 台</string>
+    <string name="nearby_unpaired">同一网络中的电脑 · 未配对</string>
+    <string name="pair">配对</string>
+    <string name="scan_qr">扫描电脑上的二维码</string>
+    <string name="manual_token">手动输入令牌</string>
+
+    <string name="online">在线</string>
+    <string name="offline">离线</string>
+    <string name="connecting">连接中…</string>
+    <string name="unauthorized">令牌已失效，需要重新配对</string>
+    <string name="never_connected">从未连接</string>
+    <string name="just_now">刚刚</string>
+    <string name="minutes_ago">%d 分钟前</string>
+    <string name="hours_ago">%d 小时前</string>
+    <string name="days_ago">%d 天前</string>
+    <string name="long_ago">很久以前</string>
+    <string name="summary_online">%1$d 台在线 · 共 %2$d 台</string>
+    <string name="summary_count">%d 台已配对</string>
+    <string name="badge_default">默认</string>
+
+    <string name="pair_scan">扫码配对电脑</string>
+    <string name="pair_manual">手动添加</string>
+    <string name="pair_paste">粘贴连接地址</string>
+
+    <string name="scan_hint">对准电脑窗口里的二维码</string>
+    <string name="scan_torch">手电筒</string>
+    <string name="scan_bad">不是有效的连接二维码</string>
+
+    <string name="manual_title">手动添加电脑</string>
+    <string name="manual_ip">电脑 IP 地址</string>
+    <string name="manual_port">端口</string>
+    <string name="manual_token_hint">在电脑端「设置 → 连接地址」里复制后粘贴</string>
+    <string name="manual_paste_full">直接粘贴完整连接地址</string>
+    <string name="manual_tip">电脑端窗口里能看到 IP 和端口；令牌可以从「复制连接地址」得到。</string>
+
+    <string name="rename">重命名</string>
+    <string name="forget">删除设备</string>
+    <string name="forget_confirm">删除后需要重新扫码才能连接，聊天记录不受影响。</string>
+    <string name="open_chat">打开对话</string>
+    <string name="set_default">设为默认电脑</string>
+    <string name="unset_default">取消默认</string>
+    <string name="default_set">已设为默认：%1$s</string>
+    <string name="default_cleared">已取消默认电脑</string>
+    <string name="copy_address">复制连接地址</string>
+    <string name="cancel">取消</string>
+    <string name="ok">确定</string>
+    <string name="send">发送</string>
+
+    <string name="empty_title">还没有连接电脑</string>
+    <string name="empty_body">在电脑上打开「近传」，用这里的扫码按钮扫一下窗口里的二维码。配对只需要一次，之后打开就能直连。</string>
+    <string name="empty_help">扫不到？看看排查建议 ›</string>
+    <string name="home_footer">文字、图片、文件只在局域网内直传，不经过外网，也不压缩。</string>
+
+    <string name="chat_error_title">连不上这台电脑</string>
+    <string name="chat_error_body">确认电脑端的「近传」还开着，手机和电脑在同一个 Wi-Fi。</string>
+    <string name="chat_error_help">运行网络诊断</string>
+    <string name="back_to_devices">返回设备列表</string>
+    <string name="retry">重试</string>
+
+    <string name="copied">已复制</string>
+    <string name="err_copy">复制失败</string>
+    <string name="err_share">分享失败</string>
+    <string name="err_open">打不开这个链接</string>
+    <string name="share_to">分享到</string>
+    <string name="saved_photo">已保存到相册「近传」</string>
+    <string name="saved_file">已保存到「下载/NearSend」</string>
+    <string name="saved_to">已保存</string>
+    <string name="err_save">保存失败</string>
+
+    <string name="err_camera">无法打开相机</string>
+    <string name="err_camera_perm">需要相机权限才能扫码</string>
+    <string name="err_net">网络不可用</string>
+    <string name="err_not_landrop">这个地址不是近传</string>
+    <string name="err_token">令牌无效，请重新扫码</string>
+    <string name="err_unreachable">连不上电脑，请确认在同一个 Wi-Fi</string>
+    <string name="err_no_device">还没有配对的电脑</string>
+
+    <string name="settings">设置</string>
+    <string name="about">关于</string>
+    <string name="version">版本</string>
+
+    <!-- 设置页 -->
+    <string name="set_group_look">外观</string>
+    <string name="set_group_connect">连接</string>
+    <string name="set_group_notify">通知</string>
+    <string name="set_group_transfer">传输</string>
+    <string name="set_group_data">数据</string>
+    <string name="set_group_support">支持</string>
+
+    <string name="set_theme">主题</string>
+    <string name="set_theme_note">应用与聊天页同步</string>
+    <string name="theme_system">跟随系统</string>
+    <string name="theme_system_short">系统</string>
+    <string name="theme_light">浅色</string>
+    <string name="theme_dark">深色</string>
+    <string name="set_font">聊天字号</string>
+    <string name="set_font_note">只影响聊天内容</string>
+
+    <string name="set_default_device">默认电脑</string>
+    <string name="set_default_none">未设置</string>
+    <string name="set_default_auto">不指定（跟随最近连接）</string>
+    <string name="set_current">当前</string>
+    <string name="set_bg_receive">后台接收消息</string>
+    <string name="set_bg_receive_note">离开应用后仍保持连接，收到消息会提醒</string>
+    <string name="set_bg_on">已开启后台接收</string>
+    <string name="set_bg_off">已关闭后台接收</string>
+    <string name="set_auto_reconnect">自动重连</string>
+    <string name="set_auto_reconnect_note">回到应用时自动检查电脑是否在线</string>
+
+    <string name="set_notify">新消息通知</string>
+    <string name="set_notify_note">电脑发来消息时在通知栏提醒</string>
+    <string name="set_notify_blocked">系统里已关闭通知，点这里去开启</string>
+    <string name="set_preview">显示消息内容</string>
+    <string name="set_preview_note">关闭后通知只提示「收到一条新消息」</string>
+    <string name="set_vibrate">震动提醒</string>
+    <string name="set_vibrate_note">收到消息和操作反馈时震动</string>
+
+    <string name="set_auto_save">自动保存收到的图片</string>
+    <string name="set_auto_save_note">后台收到图片时直接存进相册「近传」</string>
+    <string name="set_auto_save_on">已开启自动保存</string>
+    <string name="set_auto_save_off">已关闭自动保存</string>
+    <string name="set_save_dir">保存位置</string>
+    <string name="set_save_dir_value">下载/NearSend</string>
+    <string name="set_save_dir_fail">打不开下载目录</string>
+
+    <string name="set_clear_remote">清空电脑端聊天记录</string>
+    <string name="set_clear_remote_note">只清记录，不删除已经接收的文件</string>
+    <string name="set_clear_remote_confirm">电脑端的聊天记录会被清空，已接收的文件保留。确定继续？</string>
+    <string name="set_clear_remote_done">电脑端记录已清空</string>
+    <string name="set_clearing">正在清空…</string>
+    <string name="set_forget_all">移除所有配对</string>
+    <string name="set_forget_all_note">手机上的设备列表会被清空</string>
+    <string name="set_forget_all_confirm">将移除所有已配对的电脑，之后需要重新扫码。确定？</string>
+    <string name="set_forget_all_done">已移除所有配对</string>
+    <string name="set_privacy">隐私说明</string>
+    <string name="set_privacy_note">数据去向与权限说明</string>
+    <string name="set_privacy_body">近传没有账号、不连外网、没有服务器。文字和文件在两台设备之间直连传输，聊天内容只保存在电脑上；手机上只保存电脑地址和访问令牌，以及你的界面偏好。\n\n需要的权限只有三项：相机（扫码）、通知（后台提醒）、网络。文件保存在「下载/NearSend」或相册「近传」，你可以随时删除。</string>
+
+    <string name="set_help">帮助与诊断</string>
+    <string name="set_help_note">连通性自检与常见问题</string>
+    <string name="set_version">版本</string>
+    <string name="set_license">开源许可</string>
+    <string name="set_footer">近传 · 局域网直传\n没有账号，没有云端，没有广告</string>
+
+    <!-- 帮助页 -->
+    <string name="help_title">帮助与诊断</string>
+    <string name="help_diag_title">连接自检</string>
+    <string name="help_diag_note">检查手机网络、电脑可达性和令牌有效性。改动网络后可以重新检查。</string>
+    <string name="help_retry">重新检查</string>
+    <string name="help_checking">检查中…</string>
+    <string name="help_copy">复制诊断信息</string>
+    <string name="help_copied">诊断信息已复制</string>
+    <string name="help_how_title">连接步骤</string>
+    <string name="help_faq_title">常见问题</string>
+    <string name="help_footer">近传 · 局域网直传</string>
+
+    <string name="diag_network">网络</string>
+    <string name="diag_phone_ip">手机 IP</string>
+    <string name="diag_device">电脑</string>
+    <string name="diag_tcp">电脑可达</string>
+    <string name="diag_token">访问令牌</string>
+    <string name="diag_pc_name">电脑名称</string>
+    <string name="diag_state">状态码</string>
+    <string name="diag_ok">正常</string>
+    <string name="diag_fail">连不上</string>
+    <string name="diag_bad_token">已失效</string>
+    <string name="diag_wifi">Wi-Fi</string>
+    <string name="diag_cellular">移动数据</string>
+    <string name="diag_ethernet">有线网络</string>
+    <string name="diag_offline">未连接</string>
+
+    <string name="faq_1_q">扫码后页面打不开？</string>
+    <string name="faq_1_a">多半是 Windows 防火墙拦了。在电脑端「设置 → 连接」点「防火墙 放通」，同意一次 UAC 授权即可；也可以在首次运行弹出的系统提示里勾选「专用网络」。</string>
+    <string name="faq_2_q">都在 Wi-Fi 里，还是连不上？</string>
+    <string name="faq_2_a">常见原因是路由器开了「AP 隔离」或「访客网络」——这类网络禁止设备之间互相访问。换到主网络，或者用手机热点让电脑连上。</string>
+    <string name="faq_3_q">提示「令牌已失效」？</string>
+    <string name="faq_3_a">电脑端重置过连接令牌。重新扫一次二维码就能恢复，不需要删除应用数据。</string>
+    <string name="faq_4_q">后台收不到消息？</string>
+    <string name="faq_4_a">先确认「设置 → 后台接收消息」是开启的，然后在系统设置里允许近传自启动和后台运行（MIUI、EMUI、ColorOS 等厂商系统限制较多）。通知权限被关掉也会收不到提醒。</string>
+    <string name="faq_5_q">为什么没有语音输入按钮？</string>
+    <string name="faq_5_a">局域网是明文 HTTP 页面，浏览器和系统都不允许网页调用麦克风。用输入法自带的语音键转成文字再发送即可。</string>
+    <string name="faq_6_q">数据会被上传到网上吗？</string>
+    <string name="faq_6_a">不会。近传没有中转服务器，也不会访问外网。手机和电脑在同一个局域网内直连，断开 Wi-Fi 就传不了，也不会有任何数据留在云端。</string>
+
+    <string-array name="help_steps">
+        <item>在电脑上打开「近传」，保持它在运行（可以收起到托盘）。</item>
+        <item>确认手机和电脑连的是同一个 Wi-Fi，且不是访客网络。</item>
+        <item>点下面的扫码按钮，对准电脑窗口里的二维码。</item>
+        <item>配对成功后回到首页，点电脑卡片就能开始收发。</item>
+    </string-array>
+
+    <!-- 首次引导 -->
+    <string name="onboard_tagline">手机和电脑在同一个 Wi-Fi 下，扫码一次就连上。之后打开点一下，直接传文字、图片和文件。</string>
+    <string name="onboard_1_t">不登录，不联网</string>
+    <string name="onboard_1_b">没有账号体系，没有中转服务器。数据只在你的路由器和电脑之间流转。</string>
+    <string name="onboard_2_t">大文件也直传</string>
+    <string name="onboard_2_b">分片续传，进度和速度看得见。锁屏断开后重连还能接着传。</string>
+    <string name="onboard_3_t">配对一次就够</string>
+    <string name="onboard_3_b">配对过的电脑留在列表里，之后打开应用点一下就连上，不用每次扫码。</string>
+    <string name="onboard_skip">先随便看看</string>
+
+    <!-- 分享进入 -->
+    <string name="share_title">发送到电脑</string>
+    <string name="share_no_device">还没有配对过电脑。先在近传里扫码连接一次，之后就能从任意应用直接分享过来。</string>
+    <string name="share_go_pair">去配对电脑</string>
+    <string name="share_sending">正在发送…</string>
+    <string name="share_done">已发送到电脑</string>
+    <string name="share_count">共 %1$d 个文件</string>
+    <string name="share_will_try">未确认在线，将直接尝试发送</string>
+
+    <!-- 通知 -->
+    <string name="notif_channel">新消息</string>
+    <string name="notif_channel_desc">收到电脑发来的消息时提醒</string>
+    <string name="notif_service_channel">后台连接</string>
+    <string name="notif_service_desc">保持与电脑的连接，以便后台接收消息</string>
+    <string name="notif_transfer_channel">传输</string>
+    <string name="notif_transfer_desc">从其他应用分享文件时的发送进度</string>
+    <string name="notif_image">[图片]</string>
+    <string name="notif_file">[文件]</string>
+    <string name="notif_hidden">收到一条新消息</string>
+    <string name="reply">回复</string>
+    <string name="reply_hint">回复这台电脑…</string>
+
+    <string name="svc_receiving">后台接收中</string>
+    <string name="svc_paused">已暂停接收</string>
+    <string name="svc_reconnecting">正在重连…</string>
+
+    <string name="shortcut_scan">扫码配对</string>
+    <string name="shortcut_scan_long">扫描电脑上的二维码配对</string>
+</resources>

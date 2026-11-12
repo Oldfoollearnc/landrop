@@ -118,6 +118,9 @@ class LanServer extends EventEmitter {
     this.wss = new WebSocketServer({ noServer: true });
     this.server.on('upgrade', (req, socket, head) => this.onUpgrade(req, socket, head));
 
+    // 手机断线重发时用 cid 去重，避免同一条文字出现两次
+    this.recentCids = new Map();
+
     this.uploads.on('progress', (p) => this.onProgress(p));
     this.timer = setInterval(() => this.sweep(), 60 * 1000);
     this.hbTimer = setInterval(() => this.heartbeat(), 30 * 1000);
@@ -263,10 +266,36 @@ class LanServer extends EventEmitter {
     try {
       if (p === '/api/history' && req.method === 'GET') {
         return json(res, 200, {
+          ok: true,
+          app: 'nearsend',
+          version: this.core.version || '',
+          host: os.hostname(),
           messages: this.core.history(),
           theme: this.core.getTheme(),
           url: this.core.getUrl(),
         });
+      }
+
+      if (p === '/api/send/text' && req.method === 'POST') {
+        const body = await readBody(req, 128 * 1024);
+        const meta = JSON.parse(body.toString('utf8') || '{}');
+        const value = String(meta.text || '').trim();
+        if (!value) return json(res, 400, { error: 'text required' });
+        const cid = String(meta.cid || '');
+        if (cid && this.seenCid(cid)) return json(res, 200, { ok: true, duplicate: true });
+        const msg = this.core.publish({
+          from: 'phone',
+          src: cid || ('api' + Date.now().toString(36)),
+          kind: 'text',
+          text: value.slice(0, 20000),
+          reply: this.cleanReply(meta.reply),
+        });
+        return json(res, 200, { ok: true, id: msg.id });
+      }
+
+      if (p === '/api/clear' && req.method === 'POST') {
+        this.core.clear();
+        return json(res, 200, { ok: true });
       }
 
       if (p === '/api/upload/init' && req.method === 'POST') {
@@ -348,8 +377,8 @@ class LanServer extends EventEmitter {
   scanPage(req, res) {
     const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0a0a0b">
-<title>局域网传信</title><style>
+<meta name="theme-color" content="#0a0b0e">
+<title>近传</title><style>
 html,body{margin:0;height:100%;background:#0a0a0b;color:#ededf0;
 font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 .wrap{height:100%;display:flex;align-items:center;justify-content:center;padding:32px;text-align:center}
@@ -359,7 +388,7 @@ p{font-size:13px;line-height:1.7;color:#8f8f99;margin:0;max-width:280px}
 color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:19px}
 </style></head><body><div class="wrap"><div>
 <div class="dot">⇣</div><h1>需要从电脑上扫码进入</h1>
-<p>这个链接缺少访问令牌。请打开电脑托盘里的「局域网传信」，用手机扫描窗口中的二维码。</p>
+<p>这个链接缺少访问令牌。请打开电脑托盘里的「近传」，用手机扫描窗口中的二维码。</p>
 </div></div></body></html>`;
     text(res, 200, html, 'text/html; charset=utf-8');
   }
@@ -444,6 +473,8 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
         t: 'init',
         id: client.id,
         host: os.hostname(),
+        app: 'nearsend',
+        version: this.core.version || '',
         messages: this.core.history(),
         theme: this.core.getTheme(),
         url: this.core.getUrl(),
@@ -462,11 +493,14 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
     if (data.t === 'text') {
       const value = String(data.text || '').trim();
       if (value) {
+        const cid = String(data.cid || '');
+        if (cid && this.seenCid(cid)) return;
         this.core.publish({
           from: 'phone',
-          src: String(data.cid || client.id),
+          src: cid || client.id,
           kind: 'text',
           text: value.slice(0, 20000),
+          reply: this.cleanReply(data.reply),
         });
       }
       return;
@@ -490,6 +524,34 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
 
   send(ws, obj) {
     if (ws.readyState === 1) ws.send(JSON.stringify(obj));
+  }
+
+  /** cid 去重：同一部手机重连后重发，只算一次 */
+  seenCid(cid) {
+    const now = Date.now();
+    if (this.recentCids.has(cid)) return true;
+    this.recentCids.set(cid, now);
+    if (this.recentCids.size > 400) {
+      for (const [key, at] of this.recentCids) {
+        if (now - at > 10 * 60 * 1000) this.recentCids.delete(key);
+      }
+    }
+    return false;
+  }
+
+  /** 只接受引用消息的展示所需字段，避免手机端塞任意结构进来 */
+  cleanReply(reply) {
+    if (!reply || typeof reply !== 'object') return undefined;
+    const id = String(reply.id || '');
+    if (!id || id.length > 64) return undefined;
+    const out = {
+      id,
+      from: reply.from === 'pc' ? 'pc' : 'phone',
+      kind: reply.kind === 'image' ? 'image' : reply.kind === 'file' ? 'file' : 'text',
+    };
+    if (out.kind === 'text') out.text = String(reply.text || '').slice(0, 200);
+    else out.name = String(reply.name || '').slice(0, 200);
+    return out;
   }
 
   broadcast(obj) {

@@ -100,6 +100,7 @@ function windowBg() {
 // ---------- core：消息真源，桌面 IPC 与手机 WS 共用 ----------
 
 const core = {
+  version: app.getVersion(),
   history: () => store.messages(),
   get: (id) => store.get(id),
   getTheme: () => config.get('theme'),
@@ -128,6 +129,12 @@ const core = {
       send('ev', { t: 'msg:delete', id });
     }
     return ok;
+  },
+  clear() {
+    store.clear(false);
+    if (server) server.broadcast({ t: 'clear' });
+    send('ev', { t: 'clear' });
+    setUnread(0);
   },
   setTheme(theme) {
     config.patch({ theme });
@@ -194,7 +201,7 @@ function createWindow() {
     skipTaskbar: true,
     alwaysOnTop: pinned,
     show: false,
-    title: '局域网传信',
+    title: '近传',
     icon: asset('icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
@@ -292,7 +299,7 @@ function setMode(full) {
 // ---------- 托盘 ----------
 
 function trayTooltip() {
-  const base = currentUrl ? `局域网传信 · ${currentUrl.replace(/^https?:\/\//, '').split('/')[0]}` : '局域网传信';
+  const base = currentUrl ? `近传 · ${currentUrl.replace(/^https?:\/\//, '').split('/')[0]}` : '近传';
   return unread > 0 ? `${base} · ${unread} 条新消息` : base;
 }
 
@@ -316,7 +323,7 @@ function notify(msg) {
     tray.displayBalloon({
       iconType: 'custom',
       icon: nativeImage.createFromPath(asset('icon.png')),
-      title: '局域网传信',
+      title: '近传',
       content: String(body).replace(/\s+/g, ' ').slice(0, 60) || '收到一条新消息',
       noSound: true,
     });
@@ -388,10 +395,10 @@ function refreshUrl(force) {
 function checkFirewall() {
   execFile(
     'netsh',
-    ['advfirewall', 'firewall', 'show', 'rule', 'name=LanDrop'],
+    ['advfirewall', 'firewall', 'show', 'rule', 'name=NearSend'],
     { windowsHide: true },
     (err, stdout) => {
-      firewallOk = !err && /LanDrop/i.test(String(stdout || ''));
+      firewallOk = !err && /NearSend/i.test(String(stdout || ''));
       send('ev', { t: 'firewall', ok: firewallOk });
     }
   );
@@ -401,7 +408,7 @@ function openFirewall() {
   const exe = process.execPath;
   const script = [
     "Start-Process -FilePath netsh -Verb RunAs -ArgumentList @(",
-    "'advfirewall','firewall','add','rule','name=LanDrop','dir=in','action=allow',",
+    "'advfirewall','firewall','add','rule','name=NearSend','dir=in','action=allow',",
     `'program=${exe}','enable=yes','profile=any')`,
   ].join('');
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
@@ -494,7 +501,7 @@ function registerIpc() {
 
   ipcMain.handle('send-image-buffer', (_e, buffer, name) => {
     try {
-      const dir = path.join(app.getPath('temp'), 'LanDrop');
+      const dir = path.join(app.getPath('temp'), 'NearSend');
       fs.mkdirSync(dir, { recursive: true });
       const safe = String(name || 'paste.png').replace(/[\\/:*?"<>|]/g, '_');
       const file = path.join(dir, `${Date.now()}-${safe}`);
@@ -512,6 +519,16 @@ function registerIpc() {
   });
 
   ipcMain.on('delete', (_e, { id, purge }) => core.remove(id, !!purge));
+
+  // 电脑端读到手机消息后回执「已读」：手机气泡上会出现双勾
+  ipcMain.on('seen', (_e, ids) => {
+    if (!Array.isArray(ids)) return;
+    const now = Date.now();
+    for (const id of ids.slice(0, 400)) {
+      const msg = core.get(id);
+      if (msg && msg.from === 'phone' && !msg.seen) core.patch(id, { seen: now }, true);
+    }
+  });
   ipcMain.on('copy-text', (_e, text) => clipboard.writeText(String(text || '')));
   ipcMain.handle('copy-image', (_e, p) => {
     try {
@@ -610,6 +627,76 @@ function registerIpc() {
 
 // ---------- 启动 ----------
 
+/**
+ * 从旧品牌 LanDrop 的数据目录迁移。
+ * 关键点：必须在 app ready 之前执行，并且必须带上 Chromium 的 `Local State`——
+ * Electron 的 safeStorage 把密钥存在里面，漏掉它就会解不开旧聊天记录。
+ * 另外处理一种坏状态：之前迁移过但没带 Local State，记录被 park 成
+ * messages.locked-*.jsonl 的情况，自动用旧目录的密钥把记录恢复回来。
+ */
+function migrateLegacyData() {
+  try {
+    const oldDir = path.join(app.getPath('appData'), 'LanDrop');
+    const newDir = app.getPath('userData');
+    if (!fs.existsSync(oldDir)) return;
+    if (path.resolve(oldDir) === path.resolve(newDir)) return;
+
+    fs.mkdirSync(newDir, { recursive: true });
+    const hasConfig = fs.existsSync(path.join(newDir, 'config.json'));
+    const locked = fs.readdirSync(newDir).filter((n) => n.startsWith('messages.locked-'));
+    const hasHistory = fs.existsSync(path.join(newDir, 'messages.jsonl'));
+    const needsRepair = hasConfig && locked.length > 0 && !hasHistory;
+    if (hasConfig && !needsRepair) return;
+
+    // 这几个文件必须覆盖：密钥、聊天记录、配置，以及 safeStorage 依赖的 Local State
+    const FORCE = new Set(['config.json', 'messages.jsonl', 'messages.key', 'Local State', 'Preferences']);
+    for (const name of fs.readdirSync(oldDir)) {
+      const src = path.join(oldDir, name);
+      const dst = path.join(newDir, name);
+      try {
+        if (!fs.statSync(src).isFile()) continue;
+        if (fs.existsSync(dst) && !FORCE.has(name)) continue;
+        fs.copyFileSync(src, dst);
+      } catch {
+        /* 单个文件失败不影响整体 */
+      }
+    }
+
+    if (needsRepair) {
+      const rec = path.join(newDir, 'recovered');
+      fs.mkdirSync(rec, { recursive: true });
+      for (const name of locked) {
+        try {
+          fs.renameSync(path.join(newDir, name), path.join(rec, name));
+        } catch {
+          /* 保留在原处也无妨 */
+        }
+      }
+      console.log('[boot] 已用旧密钥恢复被锁的聊天记录');
+    }
+
+    // 下载目录跟着改名
+    const cfgPath = path.join(newDir, 'config.json');
+    if (fs.existsSync(cfgPath)) {
+      try {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        if (cfg.saveDir && /[\\/]LanDrop$/.test(cfg.saveDir)) {
+          cfg.saveDir = cfg.saveDir.replace(/[\\/]LanDrop$/, '\\NearSend');
+          fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+        }
+      } catch {
+        /* 配置损坏时保持原样 */
+      }
+    }
+    console.log('[boot] 已从 LanDrop 数据目录迁移');
+  } catch (err) {
+    console.error('[boot] migrate', err.message);
+  }
+}
+
+// 必须早于 app ready：Chromium 会在启动时读取 Local State
+migrateLegacyData();
+
 async function boot() {
   config.load();
 
@@ -649,7 +736,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => showWindow());
 
-  app.setAppUserModelId('com.landrop.app');
+  app.setAppUserModelId('com.nearsend.app');
 
   app.whenReady().then(boot).catch((err) => {
     console.error('[boot] failed', err);

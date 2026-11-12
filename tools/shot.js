@@ -10,7 +10,7 @@ const ROOT = path.join(__dirname, '..');
 const OUT = process.env.SHOT_OUT || path.join(ROOT, 'shot.png');
 const MODE = process.env.SHOT_MODE || 'compact';
 const THEME = process.env.SHOT_THEME || 'dark';
-const QR_FILE = path.join(os.tmpdir(), 'landrop-qr-demo.png');
+const QR_FILE = path.join(os.tmpdir(), 'NearSend-qr-demo.png');
 const NOW = Date.now();
 
 const fakeMessages = [
@@ -43,8 +43,8 @@ ipcMain.handle('state', () => ({
   sound: true,
   notify: true,
   autostart: true,
-  dataDir: 'C:\\Users\\Administrator\\AppData\\Roaming\\LanDrop',
-  saveDir: 'C:\\Users\\Administrator\\Downloads\\LanDrop',
+  dataDir: 'C:\\Users\\Administrator\\AppData\\Roaming\\NearSend',
+  saveDir: 'C:\\Users\\Administrator\\Downloads\\NearSend',
   port: 8899,
   nics: [{ name: 'WLAN', address: '192.168.5.4' }],
   nic: 'WLAN',

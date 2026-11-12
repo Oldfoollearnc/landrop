@@ -18,7 +18,7 @@ function defaults() {
     theme: 'dark',
     sound: true,
     notify: true,
-    saveDir: path.join(app.getPath('downloads'), 'LanDrop'),
+    saveDir: path.join(app.getPath('downloads'), 'NearSend'),
     autostart: true,
     nic: '',
     port: 8899,

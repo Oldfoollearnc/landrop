@@ -1,6 +1,6 @@
-appId: com.landrop.app
-productName: LanDrop
-copyright: LanDrop
+appId: com.nearsend.app
+productName: NearSend
+copyright: NearSend
 
 directories:
   output: dist
@@ -27,11 +27,11 @@ win:
         - x64
 
 portable:
-  artifactName: LanDrop-${version}-Portable.exe
-  unpackDirName: LanDrop
+  artifactName: NearSend-${version}-Portable.exe
+  unpackDirName: NearSend
 
 nsis:
-  artifactName: LanDrop-${version}-Setup.exe
+  artifactName: NearSend-${version}-Setup.exe
   oneClick: true
   perMachine: false
   allowElevation: true

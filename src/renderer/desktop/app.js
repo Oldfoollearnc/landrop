@@ -321,6 +321,16 @@ function messageEl(m) {
   const b = document.createElement('div');
   b.className = 'bubble';
 
+  if (m.reply) {
+    const q = document.createElement('div');
+    q.className = 'quote';
+    const who = m.reply.from === 'pc' ? '我' : '手机';
+    const body = m.reply.text
+      || (m.reply.kind === 'image' ? '[图片]' : '[文件] ' + (m.reply.name || ''));
+    q.textContent = `${who}：${body}`;
+    b.appendChild(q);
+  }
+
   if (m.kind === 'text') {
     b.textContent = m.text || '';
     b.title = fmtTime(m.ts);
@@ -431,7 +441,22 @@ function appendMessage(m) {
     $('jumpCount').textContent = String(pendingNew);
     $('jumpPill').hidden = false;
   }
+  if (m.from === 'phone') markSeen();
 }
+
+let seenTimer = null;
+function markSeen() {
+  if (document.visibilityState !== 'visible') return;
+  clearTimeout(seenTimer);
+  seenTimer = setTimeout(() => {
+    if (!devices.length) return;
+    const ids = loaded.filter((m) => m.from === 'phone' && m.status === 'ok' && !m.seen).map((m) => m.id);
+    if (ids.length) api.markSeen(ids.slice(-300));
+  }, 600);
+}
+
+window.addEventListener('focus', markSeen);
+document.addEventListener('visibilitychange', markSeen);
 
 function renderAll(list) {
   rendering = true;
@@ -1116,6 +1141,7 @@ function onEvent(p) {
   view = '';
   setView((!loaded.length && !devices.length) ? 'connect' : 'chat');
   appEl.classList.toggle('offline', devices.length === 0 && loaded.length > 0);
+  markSeen();
 
   if (s.locked) {
     setTimeout(() => toast('聊天记录无法解密，原文件已保留'), 900);

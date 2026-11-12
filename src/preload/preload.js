@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
   sendPaths: (paths) => ipcRenderer.invoke('send-paths', paths),
   sendImageBuffer: (buffer, name) => ipcRenderer.invoke('send-image-buffer', buffer, name),
   deleteMsg: (id, purge) => ipcRenderer.send('delete', { id, purge }),
+  markSeen: (ids) => ipcRenderer.send('seen', ids),
   copyText: (t) => ipcRenderer.send('copy-text', t),
   copyImage: (p) => ipcRenderer.invoke('copy-image', p),
   openPath: (p) => ipcRenderer.send('open-path', p),

@@ -3,7 +3,7 @@ const { execFile } = require('child_process');
 const { app } = require('electron');
 
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
-const VALUE = 'LanDrop';
+const VALUE = 'NearSend';
 
 /** 便携版解压运行时 process.execPath 指向临时目录，必须用原始 exe 路径 */
 function targetExe() {
