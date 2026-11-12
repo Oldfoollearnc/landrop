@@ -143,6 +143,33 @@ function request(port, method, urlPath, body, headers) {
   check('upload init 返回 200', r.code === 200, 'code=' + r.code);
   check('upload init 产生一条上传中消息', core.count() === 1 && core.history()[0].status === 'uploading');
 
+  console.log('下载进度事件（/d/）');
+  const fs = require('fs');
+  const os = require('os');
+  const tmpFile = path.join(os.tmpdir(), 'nearsend-test-' + Date.now() + '.bin');
+  const size = 1024 * 1024;
+  fs.writeFileSync(tmpFile, Buffer.alloc(size, 0x42));
+  const fileId = 'dddddddddddddddd';
+  const msg = core.publish({
+    id: fileId, from: 'pc', kind: 'file', name: 'big.bin',
+    path: tmpFile, status: 'ok', size, mime: 'application/octet-stream',
+  });
+  const served = [];
+  server.on('served', (p) => served.push(p));
+  const body = await new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port, path: '/d/' + msg.id + T }, (res) => {
+      let n = 0;
+      res.on('data', (c) => (n += c.length));
+      res.on('end', () => resolve(n));
+    }).on('error', reject);
+  });
+  check('下载字节数完整', body === size, 'got ' + body);
+  await new Promise((r) => setTimeout(r, 200));
+  check('收到进度事件', served.length >= 2, 'events=' + served.length);
+  const last = served[served.length - 1];
+  check('末次事件标记完成', !!last && last.done === true && last.total === size, JSON.stringify(last));
+  fs.unlinkSync(tmpFile);
+
   server.stop();
   console.log(failures ? `\n${failures} 项失败` : '\n全部通过');
   process.exit(failures ? 1 : 0);

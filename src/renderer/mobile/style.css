@@ -855,7 +855,7 @@ textarea::placeholder {
   display: flex;
   align-items: flex-end;
   background: var(--scrim);
-  animation: fade 0.16s ease-out;
+  /* 不用透明度动画：部分环境（减少动画）会把遮罩卡在 opacity:0，弹层就像没打开 */
 }
 
 @keyframes fade {
@@ -1222,4 +1222,66 @@ textarea::placeholder {
 /* 遮罩不做透明度动画，避免低帧率/减少动画环境下出现半透明残影 */
 .viewer {
   animation: none;
+}
+
+/* ---------- 下载进度（卡片下方） ---------- */
+
+.dlbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px 6px;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.dtrack {
+  flex: 0 0 52px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.dtrack i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.25s ease-out;
+}
+
+.dlbar.done .dtrack i {
+  background: var(--ok);
+}
+
+.dlbar .dtxt {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dlbar button {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--ink);
+  background: var(--surface-2);
+  padding: 3px 9px;
+  border-radius: 7px;
+}
+
+.dlbar.done button {
+  color: var(--accent);
+  background: rgba(37, 99, 235, 0.1);
+}
+
+/* 分隔符、说明行不参与文本选择，避免长按误触系统选择 */
+.sep, .day, .cap, .fs, .meta, .dlbar, .history-hint, .empty, .loader, .sheet, .viewer-top {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }

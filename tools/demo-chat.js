@@ -129,8 +129,32 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end('{"ok":true}');
   }
-  if (url.pathname.startsWith('/t/') || url.pathname.startsWith('/d/')) {
+  if (url.pathname.startsWith('/t/')) {
     return serve(res, 'assets/icon-192.png', 'image/png');
+  }
+  if (url.pathname.startsWith('/d/')) {
+    // 故意做成慢速大文件，方便观察下载进度与通知
+    const total = 8 * 1024 * 1024;
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': total,
+      'Content-Disposition': 'attachment; filename="demo-big.bin"',
+      'Cache-Control': 'no-store',
+    });
+    const chunk = Buffer.alloc(256 * 1024, 0x41);
+    let sent = 0;
+    const tick = () => {
+      if (sent >= total) {
+        res.end();
+        return;
+      }
+      const ok = res.write(chunk);
+      sent += chunk.length;
+      if (!ok) res.once('drain', () => setTimeout(tick, 60));
+      else setTimeout(tick, 60);
+    };
+    tick();
+    return;
   }
   if (url.pathname === '/api/upload/init') {
     res.writeHead(200, { 'Content-Type': 'application/json' });

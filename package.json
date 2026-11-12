@@ -1,7 +1,7 @@
 {
   "name": "nearsend",
   "productName": "NearSend",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "近传：手机扫码即连，免安装传文字、图片、文件",
   "main": "src/main/main.js",
   "author": "NearSend",

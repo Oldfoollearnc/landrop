@@ -1036,8 +1036,37 @@ document.addEventListener('keydown', (e) => {
 
 // ---------- 事件 ----------
 
-function onPresence(list) {
-  const had = devices.length;
+// 手机正在下载电脑上发出的文件：在气泡里显示进度
+const dlTimers = new Map();
+function onDownload(p) {
+  if (!p || !p.id) return;
+  const el = nodes.get(p.id);
+  if (!el) return;
+  const bubble = el.querySelector('.bubble');
+  if (!bubble) return;
+  let bar = bubble.querySelector('.dl');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.className = 'dl';
+    bar.innerHTML = '<i></i><span></span>';
+    bubble.appendChild(bar);
+  }
+  const pct = p.total ? Math.min(100, Math.round((p.sent * 100) / p.total)) : 0;
+  bar.querySelector('i').style.width = pct + '%';
+  bar.querySelector('span').textContent = p.done ? '手机已下载' : `手机下载中 ${pct}%`;
+  bar.classList.toggle('done', !!p.done);
+  if (p.done) {
+    clearTimeout(dlTimers.get(p.id));
+    dlTimers.set(p.id, setTimeout(() => {
+      const cur = nodes.get(p.id);
+      const b = cur && cur.querySelector('.dl');
+      if (b) b.remove();
+      dlTimers.delete(p.id);
+    }, 5000));
+  }
+}
+
+function onPresence(list) {  const had = devices.length;
   devices = Array.isArray(list) ? list : [];
   updateChrome();
   appEl.classList.toggle('offline', devices.length === 0 && loaded.length > 0);
@@ -1087,6 +1116,9 @@ function onEvent(p) {
       break;
     case 'presence':
       onPresence(p.devices);
+      break;
+    case 'download':
+      onDownload(p);
       break;
     case 'mode':
       applyMode(p.mode);

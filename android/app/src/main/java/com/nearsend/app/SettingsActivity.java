@@ -170,7 +170,7 @@ public class SettingsActivity extends AppCompatActivity {
                     }
                 }));
         transfer.add(divider());
-        transfer.add(navRow(getString(R.string.set_save_dir), getString(R.string.set_save_dir_value),
+        transfer.add(actionRow(getString(R.string.set_save_dir), getString(R.string.set_save_dir_value),
                 new Runnable() {
                     @Override
                     public void run() {
@@ -179,6 +179,14 @@ public class SettingsActivity extends AppCompatActivity {
                         } catch (Exception e) {
                             Ui.toast(SettingsActivity.this, getString(R.string.set_save_dir_fail));
                         }
+                    }
+                }));
+        transfer.add(divider());
+        transfer.add(actionRow(getString(R.string.downloads), getString(R.string.downloads_note),
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        Downloader.openDownloads(SettingsActivity.this);
                     }
                 }));
         content.addView(transfer.wrap);

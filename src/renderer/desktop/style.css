@@ -1546,3 +1546,31 @@ select:focus {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* 手机下载电脑文件的进度（/d/ 流式统计） */
+.dl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 4px;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.dl i {
+  display: block;
+  height: 3px;
+  flex: 1;
+  min-width: 40px;
+  border-radius: 3px;
+  background: var(--accent);
+  opacity: 0.55;
+  transition: width 0.2s ease-out;
+}
+.dl.done i {
+  background: var(--ok);
+  opacity: 1;
+}
+.dl span {
+  white-space: nowrap;
+}

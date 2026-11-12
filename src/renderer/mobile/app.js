@@ -77,6 +77,9 @@
     reply: null,
     searching: false,
     expand: new Set(),
+    dl: new Map(),      // 消息 id -> 下载进度
+    dlIds: new Map(),   // 消息 id -> 系统下载任务 id
+    saved: new Set(),
   };
 
   let ws = null;
@@ -466,7 +469,6 @@
     row.dataset.id = m.id;
     if (m.status === 'queued') row.classList.add('queued');
     if (state.selection.has(m.id)) row.classList.add('sel');
-
     const b = document.createElement('div');
     b.className = 'bubble';
 
@@ -521,9 +523,24 @@
       }
 
       if (m.status === 'uploading') b.appendChild(progressEl(m));
+
+      // 文件/视频：点一下就直接给操作，不必先摸索长按
+      if (m.kind !== 'image' && m.status === 'ok') {
+        b.addEventListener('click', (e) => {
+          if (state.selecting) return;
+          if (Date.now() - lastSheetAt < 400) return;
+          e.stopPropagation();
+          openActions(m);
+        });
+      }
+
+      // 下载中 / 已保存：在卡片下方给一条可见的进度
+      const dlState = state.dl.get(m.id);
+      if (dlState || state.saved.has(m.id)) b.appendChild(downloadEl(m, dlState));
     }
 
-    attachPress(b, m);
+    // 长按整行都能触发：文件卡片的留白区域也要能按到
+    attachPress(row, m);
     row.appendChild(b);
     return row;
   }
@@ -1373,9 +1390,205 @@
     else toast('复制失败，请长按选择');
   }
 
+  function downloadEl(m, d) {
+    const wrap = document.createElement('div');
+    const done = !d || d.state === 'done';
+    wrap.className = 'dlbar' + (done ? ' done' : '');
+    const track = document.createElement('div');
+    track.className = 'dtrack';
+    const fill = document.createElement('i');
+    fill.style.width = Math.round((done ? 1 : d.pct || 0) * 100) + '%';
+    track.appendChild(fill);
+    wrap.appendChild(track);
+
+    const txt = document.createElement('span');
+    txt.className = 'dtxt';
+    if (done) {
+      txt.textContent = '已保存';
+    } else if (d.state === 'failed') {
+      txt.textContent = '下载失败';
+    } else if (d.state === 'paused') {
+      txt.textContent = '已暂停';
+    } else {
+      const pct = Math.round((d.pct || 0) * 100);
+      const speed = d.speed > 1 ? ' · ' + fmtSize(d.speed) + '/s' : '';
+      const left = d.total > 0 ? d.total - (d.pct || 0) * d.total : 0;
+      const eta = d.speed > 1 && left > 0 ? ' · 剩 ' + Math.ceil(left / d.speed / 60) + ' 分' : '';
+      txt.textContent = `下载中 ${pct}%${speed}${eta}`;
+    }
+    wrap.appendChild(txt);
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    if (!done && d && d.state !== 'failed') {
+      btn.textContent = '取消';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        cancelDownload(m.id);
+      });
+    } else if (done) {
+      btn.textContent = '打开';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openSaved(m.id);
+      });
+    } else {
+      btn.textContent = '重试';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        saveMedia(m);
+      });
+    }
+    wrap.appendChild(btn);
+    return wrap;
+  }
+
+  function markSaved(id) {
+    state.saved.add(id);
+    try {
+      localStorage.setItem('ns.saved', JSON.stringify([...state.saved].slice(-200)));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function cancelDownload(msgId) {
+    const d = state.dl.get(msgId);
+    if (d && d.dlId && hasBridge && window.NearSend.cancelDownload) {
+      try {
+        window.NearSend.cancelDownload(String(d.dlId));
+      } catch {
+        /* ignore */
+      }
+    }
+    state.dl.delete(msgId);
+    const m = state.byId.get(msgId);
+    if (m) rebuildRow(m);
+    toast('已取消下载');
+  }
+
+  function openSaved(msgId) {
+    const dlId = state.dlIds.get(msgId);
+    if (dlId && hasBridge && window.NearSend.openDownload) {
+      window.NearSend.openDownload(String(dlId));
+      return;
+    }
+    if (hasBridge && window.NearSend.openDownloads) {
+      window.NearSend.openDownloads();
+      return;
+    }
+    toast('请在系统的「下载」里查看');
+  }
+
+  /** 只替换下载条本身，避免每次轮询重建整行导致图片重新加载 */
+  function updateDownloadUI(m) {
+    const el = state.nodes.get(m.id);
+    if (!el) return;
+    const bubble = el.querySelector('.bubble');
+    if (!bubble) return;
+    const rec = state.dl.get(m.id);
+    const done = state.saved.has(m.id);
+    const old = bubble.querySelector('.dlbar');
+    if (!rec && !done) {
+      if (old) old.remove();
+      return;
+    }
+    const fresh = downloadEl(m, rec);
+    if (old) old.replaceWith(fresh);
+    else bubble.appendChild(fresh);
+  }
+
+  function startDownload(m, dlId) {
+    state.dlIds.set(m.id, dlId);
+    state.dl.set(m.id, { state: 'running', pct: 0, dlId, at: Date.now(), sent: 0, speed: 0 });
+    updateDownloadUI(m);
+    startDownloadPolling(m, dlId);
+  }
+
+  function startDownloadPolling(m, dlId) {
+    const timer = setInterval(() => {
+      let s;
+      try {
+        s = JSON.parse(window.NearSend.downloadStatus(String(dlId)));
+      } catch {
+        return;
+      }
+      const rec = state.dl.get(m.id);
+      if (!rec) {
+        clearInterval(timer);
+        return;
+      }
+      const now = Date.now();
+      const sent = Number(s.sent) || 0;
+      const total = Number(s.total) || 0;
+      if (rec.at && sent >= rec.sent && now - rec.at > 350) {
+        const inst = ((sent - rec.sent) * 1000) / (now - rec.at);
+        rec.speed = rec.speed ? rec.speed * 0.6 + inst * 0.4 : inst;
+        rec.sent = sent;
+        rec.at = now;
+      }
+      rec.pct = total > 0 ? Math.min(1, sent / total) : 0;
+      rec.total = total;
+      rec.state = s.state === 'done' ? 'done' : s.state;
+
+      if (s.state === 'done') {
+        clearInterval(timer);
+        state.dl.delete(m.id);
+        markSaved(m.id);
+        updateDownloadUI(m);
+        toast('已保存到「' + (isImageName(m.name) ? '相册' : '下载') + '/NearSend」');
+        return;
+      }
+      if (s.state === 'failed' || s.state === 'gone') {
+        clearInterval(timer);
+        // 同名文件已存在（ERROR_FILE_ALREADY_EXISTS = 488）：带序号自动重试一次
+        if (s.reason === 488 && !rec.retried) {
+          const dot = String(m.name || '').lastIndexOf('.');
+          const suffix = dot > 0
+            ? m.name.slice(0, dot) + ' (2)' + m.name.slice(dot)
+            : (m.name || 'file') + ' (2)';
+          let again = '';
+          try {
+            again = window.NearSend.saveMedia(m.id, suffix);
+          } catch {
+            again = '';
+          }
+          if (again) {
+            state.dlIds.set(m.id, Number(again));
+            rec.dlId = Number(again);
+            rec.retried = true;
+            rec.state = 'running';
+            rec.pct = 0;
+            startDownloadPolling(m, Number(again));
+            return;
+          }
+        }
+        updateDownloadUI(m);
+        toast('下载失败，可重试');
+        return;
+      }
+      updateDownloadUI(m);
+    }, 800);
+  }
+
+  function isImageName(name) {
+    return /\.(png|jpe?g|gif|webp|bmp|heic|avif)$/i.test(String(name || ''));
+  }
+
   function saveMedia(m) {
-    if (native && window.NearSend && window.NearSend.saveMedia) {
-      window.NearSend.saveMedia(m.id, m.name || 'file');
+    if (hasBridge && window.NearSend.saveMedia) {
+      let dlId = '';
+      try {
+        dlId = window.NearSend.saveMedia(m.id, m.name || 'file');
+      } catch {
+        dlId = '';
+      }
+      if (dlId) {
+        startDownload(m, Number(dlId));
+        return;
+      }
+      // Android 9 及以下走原生存盘，没有系统进度
+      toast('正在保存…');
       return;
     }
     const a = document.createElement('a');
@@ -1791,6 +2004,12 @@
         else showHelp();
       }));
 
+      if (hasBridge && window.NearSend.openDownloads) {
+        sheet.appendChild(sheetItem(PATH.save, '下载管理', () => window.NearSend.openDownloads(), {
+          hint: '查看下载中的文件和已完成的位置',
+        }));
+      }
+
       sheet.appendChild(sheetItem(PATH.trash, '清空聊天记录', () => {
         confirmSheet('电脑端的聊天记录会被清空，已接收的文件保留。', '清空', () => {
           postJSON('/api/clear', {}).then(() => {
@@ -2010,6 +2229,8 @@
 
   for (const id of ['sheetWrap', 'attachWrap']) {
     $(id).addEventListener('click', (e) => {
+      // 长按抬起手指时产生的这一次点击，不应该把刚弹出的层关掉
+      if (Date.now() - lastSheetAt < 420) return;
       if (e.target === $(id)) closeSheet($(id));
     });
   }
@@ -2095,6 +2316,12 @@
   function boot() {
     chat.innerHTML = '<div class="loader"><span class="spinner"></span><span>正在连接电脑…</span></div>';
     loadQueue();
+    try {
+      const saved = JSON.parse(localStorage.getItem('ns.saved') || '[]');
+      if (Array.isArray(saved)) state.saved = new Set(saved);
+    } catch {
+      /* ignore */
+    }
     $('peer').textContent = '电脑';
     setStatus('连接中…', 'warn');
     // 待发送的消息先渲染出来，断网也能看见自己写了什么

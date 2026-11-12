@@ -719,6 +719,8 @@ async function boot() {
   createTray();
   registerIpc();
   server.on('presence', (devices) => send('ev', { t: 'presence', devices }));
+  // 手机在下载电脑上的文件时，把进度推给界面
+  server.on('served', (p) => send('ev', { t: 'download', id: p.id, sent: p.sent, total: p.total, done: p.done }));
   refreshUrl(true);
   setTimeout(checkFirewall, 800);
 

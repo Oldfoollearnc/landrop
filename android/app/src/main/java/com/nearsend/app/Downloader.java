@@ -1,15 +1,19 @@
 package com.nearsend.app;
 
 import android.app.Activity;
+import android.app.DownloadManager;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
 
 import androidx.core.content.FileProvider;
+
+import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -165,6 +169,104 @@ public final class Downloader {
                 }
             }
         });
+    }
+
+    // ---------- 系统下载（Android 10+）：自带通知，可在系统「下载」里管理 ----------
+
+    /** 返回 DownloadManager 的任务 id；0 表示当前系统不支持，需要退回旧方式。 */
+    public static long startDownload(Context ctx, Device d, String id, String name) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return 0;
+        try {
+            DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm == null) return 0;
+            String safe = safeName(name);
+            boolean image = guessMime(safe).startsWith("image/");
+            Uri uri = Uri.parse(d.baseUrl() + "/d/" + id + "?t=" + d.token);
+            DownloadManager.Request req = new DownloadManager.Request(uri);
+            req.setTitle(safe);
+            req.setDescription(ctx.getString(R.string.downloading));
+            req.setNotificationVisibility(
+                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            req.setAllowedOverMetered(true);
+            req.setAllowedOverRoaming(false);
+            req.addRequestHeader("User-Agent", "NearSend-Android/1.0");
+            req.setDestinationInExternalPublicDir(
+                    image ? Environment.DIRECTORY_PICTURES : Environment.DIRECTORY_DOWNLOADS,
+                    FOLDER + "/" + safe);
+            long dlId = dm.enqueue(req);
+            android.util.Log.d("NearSend", "download enqueued " + dlId + " " + safe);
+            return dlId;
+        } catch (Exception e) {
+            android.util.Log.e("NearSend", "enqueue failed: " + e);
+            return 0;
+        }
+    }
+
+    /** 给聊天页轮询用：{"state":"running","sent":123,"total":456} */
+    public static String statusJson(Context ctx, long dlId) {
+        JSONObject o = new JSONObject();
+        DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
+        if (dm == null) return "{\"state\":\"failed\"}";
+        Cursor c = null;
+        try {
+            c = dm.query(new DownloadManager.Query().setFilterById(dlId));
+            if (c == null || !c.moveToFirst()) return "{\"state\":\"gone\"}";
+            int status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+            long so = c.getLong(c.getColumnIndexOrThrow(
+                    DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
+            long total = c.getLong(c.getColumnIndexOrThrow(
+                    DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
+            String state = status == DownloadManager.STATUS_SUCCESSFUL ? "done"
+                    : status == DownloadManager.STATUS_FAILED ? "failed"
+                    : status == DownloadManager.STATUS_PAUSED ? "paused" : "running";
+            o.put("state", state);
+            o.put("sent", so);
+            o.put("total", total);
+            if (status == DownloadManager.STATUS_FAILED) {
+                o.put("reason", c.getInt(c.getColumnIndexOrThrow(
+                        DownloadManager.COLUMN_REASON)));
+            }
+        } catch (Exception e) {
+            return "{\"state\":\"failed\"}";
+        } finally {
+            if (c != null) c.close();
+        }
+        return o.toString();
+    }
+
+    public static void open(Context ctx, long dlId) {
+        try {
+            DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
+            Uri uri = dm == null ? null : dm.getUriForDownloadedFile(dlId);
+            if (uri == null) {
+                openDownloads(ctx);
+                return;
+            }
+            String mime = dm.getMimeTypeForDownloadedFile(dlId);
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(uri, mime == null ? "*/*" : mime);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(i);
+        } catch (Exception e) {
+            openDownloads(ctx);
+        }
+    }
+
+    public static void cancel(Context ctx, long dlId) {
+        try {
+            DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm != null) dm.remove(dlId);
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static void openDownloads(Context ctx) {
+        try {
+            ctx.startActivity(new Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (Exception e) {
+            Ui.toast(ctx, ctx.getString(R.string.downloads_open_fail));
+        }
     }
 
     // ---------- 细节 ----------

@@ -430,13 +430,52 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
         headers['Content-Range'] = `bytes ${start}-${end}/${stat.size}`;
         headers['Content-Length'] = end - start + 1;
         res.writeHead(206, headers);
-        return fs.createReadStream(msg.path, { start, end }).pipe(res);
+        return this.streamFile(res, msg.path, { start, end }, id, inline);
       }
     }
 
     headers['Content-Length'] = stat.size;
     res.writeHead(200, headers);
-    fs.createReadStream(msg.path).pipe(res);
+    return this.streamFile(res, msg.path, {}, id, inline);
+  }
+
+  /**
+   * 边发边统计：/d/ 的下载进度回传给电脑端，手机上就能看到
+   * 「对方下载中 42%」。/t/ 是缩略图，不统计，避免刷屏。
+   */
+  streamFile(res, file, opts, id, inline) {
+    const stream = fs.createReadStream(file, opts);
+    let total;
+    try {
+      const st = fs.statSync(file);
+      total = opts && opts.end !== undefined ? opts.end - (opts.start || 0) + 1 : st.size;
+    } catch {
+      total = 0;
+    }
+    let sent = 0;
+    let last = 0;
+    let finished = false;
+    const finish = (done) => {
+      if (finished) return;
+      finished = true;
+      if (!inline) this.emit('served', { id, sent, total, done });
+    };
+    stream.on('data', (chunk) => {
+      sent += chunk.length;
+      if (inline) return;
+      const now = Date.now();
+      if (now - last > 250) {
+        last = now;
+        this.emit('served', { id, sent, total, done: false });
+      }
+    });
+    stream.on('end', () => finish(true));
+    stream.on('error', () => finish(false));
+    res.on('close', () => {
+      if (sent < total) stream.destroy();
+      finish(sent >= total);
+    });
+    stream.pipe(res);
   }
 
   // ---------- websocket ----------

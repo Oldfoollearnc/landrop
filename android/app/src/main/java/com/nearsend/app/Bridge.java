@@ -91,10 +91,13 @@ public class Bridge {
         }
     }
 
-    /** 保存聊天里的一条图片 / 文件到「下载/NearSend」。 */
+    /** 保存聊天里的一条图片 / 文件：返回系统下载任务 id（空字符串表示走旧方式）。 */
     @JavascriptInterface
-    public void saveMedia(String id, String name) {
-        if (id == null || id.isEmpty()) return;
+    public String saveMedia(String id, String name) {
+        if (id == null || id.isEmpty()) return "";
+        long dl = Downloader.startDownload(activity, device, id, name);
+        if (dl > 0) return String.valueOf(dl);
+        // Android 9 及以下没有 DownloadManager 的公共目录写入，退回直接落盘
         Downloader.save(activity, device, id, name, new Downloader.Callback() {
             @Override
             public void onDone(final boolean ok, final String msg) {
@@ -106,6 +109,38 @@ public class Bridge {
                 });
             }
         });
+        return "";
+    }
+
+    @JavascriptInterface
+    public String downloadStatus(String dlId) {
+        try {
+            return Downloader.statusJson(activity, Long.parseLong(dlId));
+        } catch (Exception e) {
+            return "{\"state\":\"failed\"}";
+        }
+    }
+
+    @JavascriptInterface
+    public void openDownload(String dlId) {
+        try {
+            Downloader.open(activity, Long.parseLong(dlId));
+        } catch (Exception ignored) {
+        }
+    }
+
+    @JavascriptInterface
+    public void cancelDownload(String dlId) {
+        try {
+            Downloader.cancel(activity, Long.parseLong(dlId));
+            toast(activity.getString(R.string.download_canceled));
+        } catch (Exception ignored) {
+        }
+    }
+
+    @JavascriptInterface
+    public void openDownloads() {
+        Downloader.openDownloads(activity);
     }
 
     /** 调起系统分享面板，把聊天里的文件发到别的 App。 */

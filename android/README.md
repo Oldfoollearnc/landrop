@@ -8,7 +8,7 @@
 
 ## 一、安装
 
-产物：`dist/NearSend-Android-1.0.0.apk`（约 3.5 MB，已签名）
+产物：`dist/NearSend-Android-1.0.1.apk`（约 3.5 MB，已签名）
 
 - 支持 Android 7.0（API 24）及以上，targetSdk 34
 - 直接拷贝到手机安装即可；首次安装需允许「安装未知来源应用」
