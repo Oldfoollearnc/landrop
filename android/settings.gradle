@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = 'LanDrop'
+rootProject.name = 'NearSend'
 include ':app'

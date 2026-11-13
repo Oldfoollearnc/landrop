@@ -282,7 +282,14 @@ class LanServer extends EventEmitter {
         const value = String(meta.text || '').trim();
         if (!value) return json(res, 400, { error: 'text required' });
         const cid = String(meta.cid || '');
-        if (cid && this.seenCid(cid)) return json(res, 200, { ok: true, duplicate: true });
+        if (cid) {
+          this.seenCid(cid);
+          const dup = this.findBySrc(cid);
+          if (dup) {
+            // 重发同一条：把已落库的那条带回去，手机才能把本地气泡换成正式消息
+            return json(res, 200, { ok: true, duplicate: true, id: dup.id, msg: dup });
+          }
+        }
         const msg = this.core.publish({
           from: 'phone',
           src: cid || ('api' + Date.now().toString(36)),
@@ -290,7 +297,7 @@ class LanServer extends EventEmitter {
           text: value.slice(0, 20000),
           reply: this.cleanReply(meta.reply),
         });
-        return json(res, 200, { ok: true, id: msg.id });
+        return json(res, 200, { ok: true, id: msg.id, msg });
       }
 
       if (p === '/api/clear' && req.method === 'POST') {
@@ -531,17 +538,34 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
     }
     if (data.t === 'text') {
       const value = String(data.text || '').trim();
-      if (value) {
-        const cid = String(data.cid || '');
-        if (cid && this.seenCid(cid)) return;
-        this.core.publish({
-          from: 'phone',
-          src: cid || client.id,
-          kind: 'text',
-          text: value.slice(0, 20000),
-          reply: this.cleanReply(data.reply),
-        });
+      const cid = String(data.cid || '');
+      if (!value) {
+        this.send(client.ws, { t: 'ack', cid, id: '', error: 'empty' });
+        return;
       }
+      // 手机刷新页面后 cid 可能重复：不能静默丢弃，要把原来那条回给它，
+      // 否则气泡会永远停在「待发送」
+      if (cid) {
+        this.seenCid(cid);
+        const dup = this.findBySrc(cid);
+        if (dup) {
+          this.send(client.ws, { t: 'msg', msg: dup });
+          this.send(client.ws, { t: 'ack', cid, id: dup.id, duplicate: true, msg: dup });
+          return;
+        }
+      }
+      const msg = this.core.publish({
+        from: 'phone',
+        src: cid || client.id,
+        kind: 'text',
+        text: value.slice(0, 20000),
+        reply: this.cleanReply(data.reply),
+      });
+      this.send(client.ws, { t: 'ack', cid: cid || client.id, id: msg.id, msg });
+      return;
+    }
+    if (data.t === 'ping') {
+      this.send(client.ws, { t: 'pong', at: data.at || Date.now() });
       return;
     }
     if (data.t === 'delete' && typeof data.id === 'string') {
@@ -563,6 +587,17 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
 
   send(ws, obj) {
     if (ws.readyState === 1) ws.send(JSON.stringify(obj));
+  }
+
+  /** 按手机端的 cid 找回已经落库的那条文字消息 */
+  findBySrc(cid) {
+    if (!cid) return null;
+    const list = this.core.history();
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const m = list[i];
+      if (m && m.src === cid && m.kind === 'text' && m.status === 'ok') return m;
+    }
+    return null;
   }
 
   /** cid 去重：同一部手机重连后重发，只算一次 */

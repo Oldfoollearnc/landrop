@@ -697,8 +697,32 @@ function migrateLegacyData() {
 // 必须早于 app ready：Chromium 会在启动时读取 Local State
 migrateLegacyData();
 
+/**
+ * 安装器里勾选的「开机启动」通过一个一次性标记文件传给程序。
+ * 覆盖升级时用户的旧配置会被保留，但安装器里的明确选择优先一次，
+ * 读完立刻删掉，之后就以程序设置里的开关为准。
+ */
+function applyInstallerPrefs() {
+  const marker = path.join(app.getPath('userData'), 'installer.json');
+  try {
+    if (!fs.existsSync(marker)) return;
+    const prefs = JSON.parse(fs.readFileSync(marker, 'utf8'));
+    if (typeof prefs.autostart === 'boolean') config.patch({ autostart: prefs.autostart });
+    fs.unlinkSync(marker);
+  } catch (err) {
+    // 标记文件损坏不该阻止启动，删掉即可
+    try {
+      fs.unlinkSync(marker);
+    } catch {
+      /* ignore */
+    }
+    console.error('[boot] installer prefs', err.message);
+  }
+}
+
 async function boot() {
   config.load();
+  applyInstallerPrefs();
 
   const saveDir = config.get('saveDir');
   try {

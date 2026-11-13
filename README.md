@@ -126,23 +126,49 @@
 
 ### Android
 
-产物：`dist/NearSend-Android-1.0.2.apk`（约 3.3 MB，已签名）
+产物：`dist/NearSend-Android-2.0.0.apk`（约 3.5 MB，已签名，versionCode 4）
 
 - Android 7.0（API 24）及以上
 - 直接拷到手机安装；首次安装需要在系统里允许「安装未知来源应用」
-- 覆盖升级必须使用同一签名（`android/keystore/landrop.jks`），否则要先卸载
+- 覆盖升级必须使用同一签名，否则要先卸载
 - **包名已改为 `com.nearsend.app`**：装过旧版「局域网传信」（`com.landrop.app`）的手机请先卸载旧版，否则两个应用会同时存在。旧版里的配对记录不会自动带过来，重新扫一次码即可
+- 手机端的聊天界面由电脑端实时下发，**电脑端升级到 2.0.0 后，手机不用重装 App 就能用上「发不出去」的修复**
 
 ### Windows
 
 | 文件 | 说明 |
 |---|---|
-| `NearSend-<版本>-Setup.exe` | 推荐。安装到 `%LOCALAPPDATA%\Programs\NearSend`，带开始菜单和卸载项 |
-| `NearSend-<版本>-Portable.exe` | 便携版，单文件免安装 |
+| `NearSend-2.0.0-Setup.exe` | 推荐。完整安装向导：许可协议 → 安装模式 → 安装位置 → 开机启动 → 快捷方式，装到 `%LOCALAPPDATA%\Programs\NearSend` |
+| `NearSend-2.0.0-Portable.exe` | 便携版，单文件免安装 |
 
 系统要求：Windows 10 / 11（x64）。
 
-> 从旧品牌 LanDrop 升级时，首次启动会自动把 `%APPDATA%\LanDrop` 里的聊天记录和配置迁移到新目录，配对过的手机不用重新扫码。
+安装向导要点：
+
+- 安装前**自动结束正在运行的旧实例**（托盘常驻程序会锁住 exe），不需要手动退出
+- 可选「开机时自动启动近传」，装完即可用；也可以随时在程序设置里改
+- 创建桌面与开始菜单快捷方式「近传」，卸载项显示「近传 NearSend 2.0.0」
+
+安装包会自动处理版本关系：
+
+- 已装旧版近传 → 就地覆盖升级，不打断
+- 已装旧品牌 LanDrop（v1.1.0 及更早）→ 先静默卸载旧程序，再安装，**电脑里只保留一个近传**
+- 版本相同 → 视为修复安装
+- 只有安装包确实比已装版本旧时，才会提示「装回旧版」
+
+> 从旧品牌 LanDrop 升级时，首次启动会自动把 `%APPDATA%\LanDrop` 里的聊天记录和配置迁移到新目录
+> （含 Electron 的 `Local State` 解密密钥），配对过的手机不用重新扫码。
+
+### 电脑上已经有两个版本，怎么清干净
+
+先装 `NearSend-2.0.0-Setup.exe`（它会顺带卸掉 LanDrop）；如果旧版还在，按下面手动清理一次：
+
+1. 打开「设置 → 应用 → 已安装的应用」，卸载所有名字含 **LanDrop**、**局域网传信** 的条目
+2. 只保留 **近传 NearSend** 一项，版本显示 2.0.0
+3. 检查这两个目录，旧品牌目录可以删：`%APPDATA%\LanDrop`（聊天记录，删前先在程序里确认已迁移）、
+   `%LOCALAPPDATA%\Programs\LanDrop`
+
+详细说明见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ---
 
@@ -257,6 +283,8 @@ tools/               图标生成、截图、演示服务器（不参与打包�
 ## 文档
 
 - [产品定义与竞品对照](docs/PRODUCT.md)
+- [从旧版本升级到 2.0.0](docs/UPGRADE.md)
+- [2.0.0 交付验证记录](docs/VERIFY-2.0.0.md)
 - [Android 客户端说明](android/README.md)
 - [更新日志](CHANGELOG.md)
 

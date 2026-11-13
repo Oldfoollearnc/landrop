@@ -51,7 +51,10 @@
     localStorage.setItem('nsDid', myId);
   }
   let seq = 0;
-  const nextCid = (kind) => `${myId}.${kind}${++seq}`;
+  // 每次启动换一个随机片段。只用递增 seq 的话，刷新页面后第一条消息的 cid
+  // 会和上次相同，服务端按 cid 去重会把它当成重复消息，气泡就永远停在「待发送」
+  const bootTag = Date.now().toString(36).slice(-4) + Math.random().toString(36).slice(2, 6);
+  const nextCid = (kind) => `${myId}.${bootTag}.${kind}${++seq}`;
 
   // ---------- 状态 ----------
 
@@ -85,6 +88,11 @@
   let ws = null;
   let retryDelay = 600;
   let reconnectTimer = null;
+  let hbTimer = null;
+  let lastInbound = Date.now();
+  // 发出后多久没有回执就认为这条链路可能已经死了
+  const ACK_TIMEOUT = 6000;
+  const MAX_ATTEMPTS = 3;
   let seenTimer = null;
   let seenQueue = new Set();
   let lastSheetAt = 0;
@@ -539,6 +547,14 @@
       if (dlState || state.saved.has(m.id)) b.appendChild(downloadEl(m, dlState));
     }
 
+    // 未送达的文字：点一下就地重发
+    if (m.status === 'error' && isMine(m) && m.kind === 'text') {
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!state.selecting) retryText(m);
+      });
+    }
+
     // 长按整行都能触发：文件卡片的留白区域也要能按到
     attachPress(row, m);
     row.appendChild(b);
@@ -766,14 +782,17 @@
       state.connected = true;
       state.everConnected = true;
       retryDelay = 600;
+      lastInbound = Date.now();
       setStatus('已连接 · 局域网直传', 'on');
       setOffline(false);
+      startHeartbeat();
       flushPending();
       const unseen = state.messages.filter((m) => m.from === 'pc' && m.status === 'ok' && !m.seen).map((m) => m.id);
       if (unseen.length) sendSeen(unseen.slice(-200));
     });
 
     socket.addEventListener('message', (e) => {
+      lastInbound = Date.now();
       let p;
       try {
         p = JSON.parse(e.data);
@@ -805,11 +824,139 @@
     retryDelay = Math.min(retryDelay * 1.8, 5000);
   }
 
+  function dropSocket() {
+    const dead = ws;
+    ws = null;
+    state.connected = false;
+    clearInterval(hbTimer);
+    hbTimer = null;
+    if (dead) {
+      try {
+        dead.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    setStatus('连接断开，正在重连…', 'warn');
+  }
+
+  /**
+   * 手机切网、锁屏、进后台之后，WebSocket 经常是「假连接」：
+   * readyState 还是 1，send 也不报错，但帧根本到不了电脑。
+   * 所以既要心跳判活，也要给每条消息加回执与超时重发。
+   */
+  function startHeartbeat() {
+    clearInterval(hbTimer);
+    hbTimer = setInterval(() => {
+      if (!ws || ws.readyState !== 1) return;
+      if (Date.now() - lastInbound > 45000) {
+        dropSocket();
+        scheduleReconnect();
+        return;
+      }
+      try {
+        ws.send(JSON.stringify({ t: 'ping', at: Date.now() }));
+      } catch {
+        dropSocket();
+        scheduleReconnect();
+      }
+    }, 15000);
+  }
+
+  function deliver(cid) {
+    const item = state.pending.get(cid);
+    if (!item) return;
+    if (!ws || ws.readyState !== 1 || !state.connected) {
+      setPendingStatus(cid, 'queued');
+      return;
+    }
+    item.attempts = (item.attempts || 0) + 1;
+    item.failed = false;
+    clearTimeout(item.timer);
+    item.timer = setTimeout(() => onNoAck(cid), ACK_TIMEOUT);
+    try {
+      ws.send(JSON.stringify({ t: 'text', text: item.text, cid, reply: item.reply || undefined }));
+      setPendingStatus(cid, 'sending');
+    } catch {
+      clearTimeout(item.timer);
+      onNoAck(cid);
+    }
+  }
+
+  function onNoAck(cid) {
+    const item = state.pending.get(cid);
+    if (!item) return;
+    if ((item.attempts || 0) >= MAX_ATTEMPTS) {
+      failText(cid);
+      return;
+    }
+    // WebSocket 没回执就再用 HTTP 走一遍，两条链路总有一条是活的
+    postJSON('/api/send/text', { text: item.text, cid, reply: item.reply || undefined })
+      .then((r) => {
+        if (r && r.msg) resolveLocal(cid, r.msg);
+        else if (r && r.id) resolveLocal(cid, { id: r.id, src: cid });
+        else failText(cid);
+      })
+      .catch(() => {
+        const it = state.pending.get(cid);
+        if (!it) return;
+        if ((it.attempts || 0) >= MAX_ATTEMPTS) {
+          failText(cid);
+          return;
+        }
+        setPendingStatus(cid, 'sending');
+        dropSocket();
+        scheduleReconnect();
+      });
+  }
+
+  function resolveLocal(cid, msg) {
+    const item = state.pending.get(cid);
+    if (item) clearTimeout(item.timer);
+    state.pending.delete(cid);
+    saveQueue();
+    const local = state.locals.get(cid);
+    if (local) {
+      removeLocalRow(local.id);
+      state.locals.delete(cid);
+    }
+    if (msg && msg.id && msg.kind && !state.byId.has(msg.id)) appendMessage(msg);
+  }
+
+  function failText(cid) {
+    const item = state.pending.get(cid);
+    if (item) {
+      clearTimeout(item.timer);
+      item.failed = true;
+    }
+    setPendingStatus(cid, 'error');
+    let n = 0;
+    for (const [, v] of state.pending) if (v.failed) n += 1;
+    if (n) setOffline(true, `${n} 条消息未送达，点一下气泡可以重新发送`, false);
+  }
+
+  function retryText(m) {
+    const item = state.pending.get(m.src);
+    if (!item) return;
+    item.attempts = 0;
+    item.failed = false;
+    setOffline(false);
+    if (!ws || ws.readyState !== 1) {
+      connect();
+      scheduleReconnect();
+    }
+    deliver(m.src);
+    scheduleReconnect();
+  }
+
   function flushPending() {
     if (!ws || ws.readyState !== 1) return;
-    for (const [cid, v] of state.pending) {
-      ws.send(JSON.stringify({ t: 'text', text: v.text, cid, reply: v.reply || undefined }));
-      setPendingStatus(cid, 'sending');
+    for (const cid of state.pending.keys()) {
+      const item = state.pending.get(cid);
+      if (!item) continue;
+      item.attempts = 0;
+      item.failed = false;
+      deliver(cid);
     }
   }
 
@@ -853,6 +1000,13 @@
     }
     if (p.t === 'clear') {
       renderAll([]);
+      return;
+    }
+    if (p.t === 'ack') {
+      resolveLocal(p.cid, p.msg || null);
+      return;
+    }
+    if (p.t === 'pong') {
       return;
     }
     if (p.t === 'presence') {
@@ -984,9 +1138,10 @@
     appendMessage(local);
 
     if (state.connected && ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({ t: 'text', text: value, cid, reply: reply || undefined }));
+      deliver(cid);
     } else {
       setOffline(true, '当前离线 · 消息会在连上后自动发送', false);
+      connect();
     }
 
     input.value = '';
@@ -2316,6 +2471,23 @@
     connect();
     restoreDraft();
     autoGrow();
+
+    // 回到前台、网络恢复时立刻验一次连接，别等心跳发现
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!ws || ws.readyState !== 1) {
+        connect();
+        return;
+      }
+      try {
+        ws.send(JSON.stringify({ t: 'ping', at: Date.now() }));
+      } catch {
+        /* 心跳会兜底 */
+      }
+    });
+    window.addEventListener('online', () => {
+      if (!ws || ws.readyState !== 1) connect();
+    });
   }
 
   boot();

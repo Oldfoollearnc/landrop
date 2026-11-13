@@ -170,6 +170,28 @@ function request(port, method, urlPath, body, headers) {
   check('末次事件标记完成', !!last && last.done === true && last.total === size, JSON.stringify(last));
   fs.unlinkSync(tmpFile);
 
+  console.log('WebSocket 收发、回执与心跳');
+  const WebSocket = require('ws');
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws${T}`);
+  const inbox = [];
+  ws.on('message', (raw) => inbox.push(JSON.parse(raw.toString())));
+  await new Promise((resolve, reject) => {
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
+  ws.send(JSON.stringify({ t: 'ping', at: 123 }));
+  ws.send(JSON.stringify({ t: 'text', text: 'ws 消息', cid: 'wcid-1' }));
+  ws.send(JSON.stringify({ t: 'text', text: 'ws 消息', cid: 'wcid-1' }));
+  await new Promise((r) => setTimeout(r, 400));
+
+  check('心跳有 pong 回应', inbox.some((m) => m.t === 'pong'));
+  const acks = inbox.filter((m) => m.t === 'ack');
+  check('每条文字都收到 ack', acks.length === 2, 'acks=' + acks.length);
+  check('ack 带回落库后的消息', acks.every((m) => m.msg && m.msg.id && m.msg.kind === 'text'));
+  check('重复 cid 只落库一条', core.history().filter((m) => m.src === 'wcid-1').length === 1);
+  check('ack 的 id 与落库消息一致', acks.length === 2 && acks[1].id === acks[1].msg.id);
+  ws.close();
+
   server.stop();
   console.log(failures ? `\n${failures} 项失败` : '\n全部通过');
   process.exit(failures ? 1 : 0);

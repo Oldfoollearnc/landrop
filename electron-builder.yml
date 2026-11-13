@@ -1,6 +1,11 @@
+# 近传 NearSend · 构建配置
+#
+# 只有一个应用标识（appId），从 1.0.x 升到 2.0.0 是就地覆盖升级。
+# 安装包的升级/卸载逻辑见 assets/installer.nsh。
+
 appId: com.nearsend.app
 productName: NearSend
-copyright: NearSend
+copyright: Copyright © 2026 NearSend
 
 directories:
   output: dist
@@ -9,32 +14,46 @@ directories:
 electronDist: node_modules/electron/dist
 npmRebuild: false
 
+compression: maximum
+asar: true
+
 files:
   - package.json
   - src/**/*
-  - assets/**
-
-asar: true
+  - assets/**/*
 
 win:
   icon: assets/icon.ico
+  publisherName: NearSend
+  legalTrademarks: 近传 NearSend
   target:
-    - target: portable
-      arch:
-        - x64
     - target: nsis
       arch:
         - x64
+    - target: portable
+      arch:
+        - x64
+
+nsis:
+  artifactName: NearSend-${version}-Setup.exe
+  # 完整安装向导：欢迎 → 许可协议 → 安装位置 → 快捷方式 → 完成
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 近传
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  differentialPackage: true
+  license: assets/license_zh.txt
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
+  installerHeaderIcon: assets/icon.ico
+  uninstallDisplayName: 近传 NearSend ${version}
+  include: assets/installer.nsh
 
 portable:
   artifactName: NearSend-${version}-Portable.exe
   unpackDirName: NearSend
-
-nsis:
-  artifactName: NearSend-${version}-Setup.exe
-  oneClick: true
-  perMachine: false
-  allowElevation: true
-  runAfterFinish: true
-  deleteAppDataOnUninstall: false
-  include: assets/installer.nsh
