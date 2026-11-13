@@ -350,6 +350,54 @@ async function main() {
     const dupCount = ((history2 && history2.messages) || []).filter((x) => x.text === `E2E-${stamp}-DUP`).length;
     check('重复 cid 只落库一条', dupCount === 1, `count=${dupCount}`);
 
+    // ---------- 假连接 / 断网 → 重连自动补发（可选，--offline） ----------
+    // DevTools 的 offline 只影响 HTTP，不影响已建立的 WebSocket，
+    // 这里在页面里注入故障：send 的帧直接丢弃（模拟锁屏/切网后的假连接），
+    // 同时让 HTTP 兜底也失败，完整走一遍「发送中 → 判死 → 重连 → 补发」。
+    if (process.argv.includes('--offline')) {
+      const offlineText = `E2E-${stamp}-OFF`;
+      const injected = await evaluate(`(() => {
+        window.__nsSavedSend = WebSocket.prototype.send;
+        window.__nsSavedFetch = window.fetch;
+        WebSocket.prototype.send = function () { return; };
+        window.fetch = function () { return Promise.reject(new TypeError('simulated offline')); };
+        return true;
+      })()`);
+      check('故障注入成功（模拟帧丢失 + HTTP 不通）', injected === true);
+
+      await send(offlineText);
+      await sleep(2000);
+      const down = await evaluate(probe());
+      check('假连接时消息不会假装已送达，停在待发送/发送中', !!down && down.pending >= 1,
+        down ? `pending=${down.pending}` : '无状态');
+
+      // 恢复“网络”：还原 send/fetch，并像系统恢复联网一样触发 online
+      await evaluate(`(() => {
+        WebSocket.prototype.send = window.__nsSavedSend;
+        window.fetch = window.__nsSavedFetch;
+        window.dispatchEvent(new Event('online'));
+        return true;
+      })()`);
+
+      let recovered = false;
+      let lastProbe = null;
+      const deadline = Date.now() + 75000;
+      while (Date.now() < deadline) {
+        lastProbe = await evaluate(probe());
+        if (lastProbe.pending === 0 && lastProbe.texts.join(' ').includes(offlineText)) {
+          recovered = true;
+          break;
+        }
+        await sleep(500);
+      }
+      check('恢复网络后自动补发成功（无需手动重发）', recovered,
+        lastProbe ? `pending=${lastProbe.pending}` : '无状态');
+
+      const h3 = await evaluate(`fetch('/api/history').then(r => r.json())`, true);
+      const offCount = ((h3 && h3.messages) || []).filter((x) => x.text === offlineText).length;
+      check('断网消息补发后只落库一条', offCount === 1, `count=${offCount}`);
+    }
+
     // ---------- 截图（可选，用来看气泡状态） ----------
     if (shot) {
       const data = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, sessionId);
