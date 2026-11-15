@@ -1582,3 +1582,146 @@ select:focus {
 .dl.waiting span {
   color: var(--ink-3);
 }
+
+/* ============================================================
+   表情 / 输入状态 / 撤回
+   ============================================================ */
+
+.emoji-pop {
+  position: absolute;
+  right: 14px;
+  bottom: 58px;
+  z-index: 35;
+  width: 296px;
+  max-width: calc(100% - 28px);
+  padding: 8px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+  animation: popIn 140ms var(--ease);
+}
+
+.emoji-head {
+  padding: 3px 6px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  max-height: 196px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.emoji-grid button {
+  padding: 5px 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--d1) var(--ease), transform var(--d1) var(--spring);
+}
+
+.emoji-grid button:hover {
+  background: var(--surface-3);
+  transform: scale(1.16);
+}
+
+.typing {
+  position: absolute;
+  left: 14px;
+  bottom: 8px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--ink-3);
+  font-size: 11.5px;
+  pointer-events: none;
+  animation: popIn 140ms var(--ease);
+}
+
+.tdots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.tdots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: typingDot 1.2s infinite;
+}
+
+.tdots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.tdots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typingDot {
+  0%, 60%, 100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.msg.sys {
+  justify-content: center;
+  margin: 8px 0;
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+.msg.sys span {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.msg.sys.enter span {
+  animation: popIn 180ms var(--ease);
+}
+
+/* 聊天字号 */
+:root[data-font='s'] .bubble { font-size: 11.5px; }
+:root[data-font='m'] .bubble { font-size: 13px; }
+:root[data-font='l'] .bubble { font-size: 14.5px; }
+:root[data-font='xl'] .bubble { font-size: 16px; }
+
+.bubble video.thumb {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: min(280px, 46vh);
+  border-radius: 15px;
+  background: var(--surface-3, #1a1a1e);
+}
+
+.bubble audio {
+  display: block;
+  width: 260px;
+  max-width: 100%;
+  height: 36px;
+  margin: 6px 4px 2px;
+}
+

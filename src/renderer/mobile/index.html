@@ -46,6 +46,11 @@
 
   <main class="chat" id="chat"></main>
 
+  <div class="typing" id="typing" hidden>
+    <span class="tdots"><i></i><i></i><i></i></span>
+    <span id="typingText">电脑正在输入</span>
+  </div>
+
   <button class="jump" id="jump" hidden>
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12 5v13M5.6 12.4L12 18.8l6.4-6.4"/>
@@ -67,6 +72,11 @@
     <button class="round" id="plus" aria-label="发送图片或文件">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
         <path d="M12 5v14M5 12h14"/>
+      </svg>
+    </button>
+    <button class="round" id="emojiBtn" aria-label="表情">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <circle cx="12" cy="12" r="8.4"/><path d="M8.9 14.1c.8 1.35 1.85 2.02 3.1 2.02s2.3-.67 3.1-2.02"/><path d="M9.3 9.6h.01M14.7 9.6h.01" stroke-width="2.6"/>
       </svg>
     </button>
     <div class="box">
@@ -117,6 +127,10 @@
 
 <div class="sheet-wrap" id="attachWrap" hidden>
   <div class="sheet attach" id="attach"></div>
+</div>
+
+<div class="sheet-wrap" id="emojiWrap" hidden>
+  <div class="sheet attach emoji-sheet" id="emojiSheet"></div>
 </div>
 
 <div class="viewer" id="viewer" hidden>

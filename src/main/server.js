@@ -11,6 +11,7 @@ const { kindOf } = require('./store');
 
 const RENDERER = path.join(__dirname, '..', 'renderer');
 const CHUNK_LIMIT = 16 * 1024 * 1024;
+const RECALL_MS = 2 * 60 * 1000;
 
 const MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
@@ -381,6 +382,17 @@ class LanServer extends EventEmitter {
         return json(res, 200, { id, name: file.name, size: file.size });
       }
 
+      const recallMatch = p.match(/^\/api\/msg\/([a-f0-9]{16})\/recall$/);
+      if (recallMatch && req.method === 'POST') {
+        const msg = this.core.get(recallMatch[1]);
+        if (!msg) return json(res, 404, { ok: false, error: 'not found' });
+        const can = msg.from === 'phone' && msg.status === 'ok' && !msg.recalled
+          && Date.now() - Number(msg.ts || 0) <= RECALL_MS;
+        if (!can) return json(res, 403, { ok: false, error: 'recall not allowed' });
+        this.core.patch(msg.id, { recalled: true }, true);
+        return json(res, 200, { ok: true });
+      }
+
       const delMatch = p.match(/^\/api\/msg\/([a-f0-9]{16})$/);
       if (delMatch && req.method === 'DELETE') {
         const purge = url.searchParams.get('purge') === '1';
@@ -632,6 +644,10 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
       this.send(client.ws, { t: 'pong', at: data.at || Date.now() });
       return;
     }
+    if (data.t === 'typing') {
+      this.emit('typing', { device: client.device, on: !!data.on });
+      return;
+    }
     if (data.t === 'delete' && typeof data.id === 'string') {
       // 和 HTTP DELETE 保持一致：删除上传中的消息时结束上传会话
       this.uploads.abort(data.id);
@@ -667,7 +683,7 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
     const list = this.core.history();
     for (let i = list.length - 1; i >= 0; i -= 1) {
       const m = list[i];
-      if (m && m.src === cid && m.kind === 'text' && m.status === 'ok') return m;
+      if (m && m.src === cid && m.kind === 'text' && m.status === 'ok' && !m.recalled) return m;
     }
     return null;
   }

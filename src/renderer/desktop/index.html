@@ -2,7 +2,7 @@
 <html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; media-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
 <title>近传</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -89,11 +89,20 @@
           </svg>
           <b id="jumpCount">1</b> 条新消息
         </button>
+        <div class="typing" id="typing" hidden>
+          <span class="tdots"><i></i><i></i><i></i></span>
+          <span id="typingText">手机正在输入</span>
+        </div>
       </div>
 
       <footer class="composer">
         <div class="cbox">
           <textarea id="input" rows="1" placeholder="发消息，或粘贴图片 / 拖入文件"></textarea>
+          <button class="ibtn" id="btnEmoji" title="表情">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+              <circle cx="8" cy="8" r="5.6"/><path d="M5.9 9.4c.55.95 1.25 1.42 2.1 1.42s1.55-.47 2.1-1.42"/><path d="M6.2 6.4h.01M9.8 6.4h.01" stroke-width="2"/>
+            </svg>
+          </button>
           <button class="ibtn" id="btnImg" title="发送图片">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
               <rect x="2.6" y="3.6" width="10.8" height="8.8" rx="2"/>
@@ -113,6 +122,11 @@
         </button>
       </footer>
 
+      <div class="emoji-pop" id="emojiPop" hidden>
+        <div class="emoji-head">常用表情</div>
+        <div class="emoji-grid" id="emojiGrid"></div>
+      </div>
+
       <div class="multibar" id="multibar" hidden>
         <span class="mb-count"><b id="multiCount">0</b> 已选</span>
         <button class="mb-btn" id="multiCancel">取消</button>
@@ -130,6 +144,15 @@
             <div class="seg" id="setTheme">
               <button data-v="dark">深色</button>
               <button data-v="light">蓝白</button>
+            </div>
+          </div>
+          <div class="srow">
+            <span class="slabel">聊天字号</span>
+            <div class="seg" id="setFont">
+              <button data-v="s">小</button>
+              <button data-v="m">标准</button>
+              <button data-v="l">大</button>
+              <button data-v="xl">特大</button>
             </div>
           </div>
           <div class="srow">
@@ -171,6 +194,10 @@
             <span class="sval mono" id="setPort"></span>
           </div>
           <div class="srow">
+            <span class="slabel">在线设备</span>
+            <span class="sval" id="setDevices">—</span>
+          </div>
+          <div class="srow">
             <span class="slabel">防火墙</span>
             <span class="sval" id="setFwState">未知</span>
             <button class="chip" id="setFw">放通</button>
@@ -210,6 +237,10 @@
           <div class="srow">
             <span class="slabel">版本</span>
             <span class="sval mono" id="setVer">—</span>
+          </div>
+          <div class="srow">
+            <span class="slabel">检查更新</span>
+            <button class="chip" id="setUpdate">打开下载页</button>
           </div>
           <p class="snote">同一 Wi-Fi 下扫码即用，文字、图片、文件只在局域网内传输，不经过外网。</p>        </div>
       </div>

@@ -12,6 +12,20 @@
   const sendBtn = $('send');
   const CHUNK = 4 * 1024 * 1024;
   const MAX_TEXT = 20000;
+  const RECALL_MS = 2 * 60 * 1000;
+
+  const EMOJIS = [
+    '😀', '😄', '😁', '😆', '😅', '😂', '🤣', '😊', '😇', '🙂', '🙃', '😉',
+    '😌', '😍', '🥰', '😘', '😗', '😙', '😚', '😋', '😛', '😝', '😜', '🤪',
+    '🤨', '🧐', '🤓', '😎', '🥳', '😏', '😒', '😞', '😔', '😟', '😕', '🙁',
+    '😣', '😖', '😫', '😩', '🥺', '😢', '😭', '😤', '😠', '😡', '🤬', '🤯',
+    '😳', '🥵', '🥶', '😱', '😨', '😰', '😥', '😓', '🤗', '🤔', '🤭', '🤫',
+    '😶', '😐', '😑', '😬', '🙄', '😯', '😦', '😧', '😮', '😲', '🥱', '😴',
+    '🤤', '😪', '😵', '🤐', '🥴', '🤢', '🤮', '🤧', '😷', '🤒', '🤕', '👍',
+    '👎', '👌', '✌️', '🤞', '🤟', '🤘', '👏', '🙌', '🤝', '🙏', '💪', '👋',
+    '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '💔', '💯', '✨', '🎉',
+    '🔥', '⭐', '🌹', '🍀', '☕', '🍺', '🎂', '🧧', '🚀', '✅', '❌', '⚠️',
+  ];
 
   const NS = 'http://www.w3.org/2000/svg';
 
@@ -73,6 +87,7 @@
     connected: false,
     everConnected: false,
     peer: '',
+    version: '',
     selecting: false,
     selection: new Set(),
     hits: [],
@@ -90,6 +105,9 @@
   let retryDelay = 600;
   let reconnectTimer = null;
   let hbTimer = null;
+  let typingHideTimer = null;
+  let typingStopTimer = null;
+  let lastTypingSent = 0;
   let lastInbound = Date.now();
   // 发出后多久没有回执就认为这条链路可能已经死了
   const ACK_TIMEOUT = 6000;
@@ -180,6 +198,45 @@
     toastTimer = setTimeout(() => toastEl.classList.remove('on'), 1900);
   }
 
+  function showTyping(on) {
+    const el = $('typing');
+    clearTimeout(typingHideTimer);
+    typingHideTimer = null;
+    if (!on) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    typingHideTimer = setTimeout(() => showTyping(false), 4000);
+  }
+
+  function sendTyping(on) {
+    clearTimeout(typingStopTimer);
+    typingStopTimer = null;
+    if (on) {
+      if (!state.connected || !ws || ws.readyState !== 1) return;
+      const now = Date.now();
+      if (now - lastTypingSent < 1800) return;
+      lastTypingSent = now;
+      try {
+        ws.send(JSON.stringify({ t: 'typing', on: true }));
+      } catch {
+        /* ignore */
+      }
+      typingStopTimer = setTimeout(() => sendTyping(false), 2500);
+    } else {
+      const wasActive = !!lastTypingSent;
+      lastTypingSent = 0;
+      if (wasActive && state.connected && ws && ws.readyState === 1) {
+        try {
+          ws.send(JSON.stringify({ t: 'typing', on: false }));
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
   function svg(path, size = 20, opts = {}) {
     const s = document.createElementNS(NS, 'svg');
     s.setAttribute('viewBox', '0 0 24 24');
@@ -216,6 +273,7 @@
     help: 'M12 3.6a8.4 8.4 0 1 0 0 16.8 8.4 8.4 0 0 0 0-16.8z M9.7 9.5a2.4 2.4 0 1 1 3.1 2.3c-.6.2-.9.8-.9 1.4v.5 M12 17v.1',
     settings: 'M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z M19 12c0-.5 0-.9-.1-1.3l2-1.5-2-3.4-2.3.9c-.7-.5-1.4-.9-2.2-1.1L14 3h-4l-.4 2.6c-.8.2-1.5.6-2.2 1.1l-2.3-.9-2 3.4 2 1.5c-.1.4-.1.8-.1 1.3s0 .9.1 1.3l-2 1.5 2 3.4 2.3-.9c.7.5 1.4.9 2.2 1.1L10 21h4l.4-2.6c.8-.2 1.5-.6 2.2-1.1l2.3.9 2-3.4-2-1.5c.1-.4.1-.8.1-1.3z',
     brush: 'M4 20l4.5-1.2L20 7.3 16.7 4 5.2 15.5z',
+    undo: 'M9.5 7.5L4.5 12l5 4.5 M5.2 12h8.6a5.2 5.2 0 0 1 0 10.4h-1',
     chevron: 'M9 5.5L15.5 12 9 18.5',
   };
 
@@ -488,6 +546,14 @@
         e.stopPropagation();
       }
     }, true);
+    if (m.recalled) {
+      row.classList.add('sys');
+      if (state.selection.has(m.id)) row.classList.add('sel');
+      const tip = document.createElement('span');
+      tip.textContent = isMine(m) ? '你撤回了一条消息' : '对方撤回了一条消息';
+      row.appendChild(tip);
+      return row;
+    }
     if (m.status === 'queued') row.classList.add('queued');
     if (state.selection.has(m.id)) row.classList.add('sel');
     const b = document.createElement('div');
@@ -501,6 +567,8 @@
     } else {
       b.classList.add('media');
       const video = /^video\//i.test(m.mime || '') || /\.(mp4|mov|webm|m4v)$/i.test(m.name || '');
+      const audio = !video && (/^audio\//i.test(m.mime || '')
+        || /\.(mp3|m4a|wav|ogg|aac|flac|opus)$/i.test(m.name || ''));
       if (m.kind === 'image' && m.status === 'ok') {
         const img = document.createElement('img');
         img.loading = 'lazy';
@@ -523,22 +591,36 @@
         v.playsInline = true;
         v.preload = 'metadata';
         v.src = `/t/${m.id}`;
+        v.addEventListener('click', (e) => e.stopPropagation());
         v.addEventListener('loadedmetadata', () => {
           if (state.stick) pin(true);
         });
+        v.addEventListener('error', () => {
+          if (v.isConnected) v.replaceWith(fileCard(m));
+        });
         b.appendChild(v);
+      } else if (audio && m.status === 'ok') {
+        const a = document.createElement('audio');
+        a.controls = true;
+        a.preload = 'metadata';
+        a.src = `/t/${m.id}`;
+        a.addEventListener('click', (e) => e.stopPropagation());
+        a.addEventListener('error', () => {
+          if (a.isConnected) a.replaceWith(fileCard(m));
+        });
+        b.appendChild(a);
       } else {
         b.appendChild(fileCard(m));
       }
 
-      // 图片/视频在缩略图下补一行文件名；文件卡片本身已经有名字和大小，不再重复
-      const hasThumb = (m.kind === 'image' || video) && m.status === 'ok';
+      // 图片/视频/音频在缩略图下补一行文件名；文件卡片本身已经有名字和大小，不再重复
+      const hasThumb = (m.kind === 'image' || video || audio) && m.status === 'ok';
       if (hasThumb) {
         const cap = document.createElement('div');
         cap.className = 'cap';
         const name = document.createElement('span');
         name.className = 'cname';
-        name.textContent = m.name || (m.kind === 'image' ? '图片' : '文件');
+        name.textContent = m.name || (m.kind === 'image' ? '图片' : video ? '视频' : audio ? '音频' : '文件');
         const size = document.createElement('span');
         size.textContent = fmtSize(m.size);
         cap.appendChild(name);
@@ -828,6 +910,7 @@
       const queued = state.pending.size;
       setOffline(true, queued ? `连接断开 · ${queued} 条消息待发送` : '连接断开，正在重连…', true);
       for (const cid of state.pending.keys()) setPendingStatus(cid, 'queued');
+      showTyping(false);
       scheduleReconnect();
     });
 
@@ -981,15 +1064,21 @@
   function onSocket(p) {
     if (p.t === 'init') {
       state.peer = p.host || state.peer || '电脑';
+      state.version = p.version || state.version;
       $('peer').textContent = state.peer;
       document.title = state.peer + ' · 近传';
       // 电脑上的主题不驱动手机；手机端自己决定
       reconcileHistory(p.messages || []);
       return;
     }
+    if (p.t === 'typing') {
+      if (p.from === 'pc') showTyping(!!p.on);
+      return;
+    }
     if (p.t === 'msg') {
       const m = p.msg;
       if (!m) return;
+      if (m.from === 'pc') showTyping(false);
       if (m.src && state.locals.has(m.src)) {
         const local = state.locals.get(m.src);
         removeLocalRow(local.id);
@@ -1020,6 +1109,7 @@
     }
     if (p.t === 'clear') {
       cancelAllUploads();
+      showTyping(false);
       renderAll([]);
       return;
     }
@@ -1082,7 +1172,8 @@
     }
     const el = state.nodes.get(id);
     if (!el) return;
-    if ('status' in changes || 'path' in changes || 'seen' in changes || 'name' in changes) {
+    if ('status' in changes || 'path' in changes || 'seen' in changes || 'name' in changes
+      || 'recalled' in changes) {
       rebuildRow(m);
       return;
     }
@@ -1184,6 +1275,8 @@
     }
 
     input.value = '';
+    sendTyping(false);
+    closeEmoji();
     autoGrow();
     sendBtn.disabled = true;
     clearReply();
@@ -1526,6 +1619,9 @@
     const media = isMedia(m) && m.status === 'ok';
     showSheet((sheet) => {
       sheet.appendChild(sheetHeader(isMine(m) ? '我发送的' : '对方发送的', fullTime(m.ts)));
+      if (canRecall(m)) {
+        sheet.appendChild(sheetItem(PATH.undo, '撤回', () => recallMessage(m.id)));
+      }
       if (m.kind === 'text') {
         sheet.appendChild(sheetItem(PATH.copy, '复制文字', () => copyText(m.text || '')));
       }
@@ -1810,6 +1906,30 @@
     toast('已复制，可以粘贴到其他应用');
   }
 
+  function canRecall(m) {
+    return isMine(m) && m.status === 'ok' && !m.recalled
+      && Date.now() - Number(m.ts || 0) <= RECALL_MS;
+  }
+
+  function recallMessage(id) {
+    fetch(`/api/msg/${id}/recall`, { method: 'POST' })
+      .then(async (r) => {
+        if (r.ok) {
+          patch(id, { recalled: true });
+          toast('已撤回');
+          return;
+        }
+        let data = {};
+        try {
+          data = await r.json();
+        } catch {
+          data = {};
+        }
+        toast(data.error === 'recall not allowed' ? '超过 2 分钟，无法撤回' : '撤回失败');
+      })
+      .catch(() => toast('撤回失败，请检查连接'));
+  }
+
   function cancelUploadFor(id) {
     for (const [cid, local] of state.locals) {
       if (local.id === id && local.kind === 'upload') state.cancelUploads.add(cid);
@@ -1956,6 +2076,7 @@
       return;
     }
     for (const m of state.messages) {
+      if (m.recalled) continue;
       const hay = ((m.text || '') + ' ' + (m.name || '')).toLowerCase();
       if (hay.includes(needle)) state.hits.push(m.id);
     }
@@ -2003,7 +2124,7 @@
   };
 
   function images() {
-    return state.messages.filter((m) => m.kind === 'image' && m.status === 'ok');
+    return state.messages.filter((m) => m.kind === 'image' && m.status === 'ok' && !m.recalled);
   }
 
   function setChrome(dark) {
@@ -2248,7 +2369,7 @@
 
       sheet.appendChild(sheetItem(PATH.info, '关于近传', () => {
         showSheet((s2) => {
-          s2.appendChild(sheetHeader('近传 ' + (native && native.version ? native.version : '1.0.0'), '手机 ⇄ 电脑，局域网直传'));
+          s2.appendChild(sheetHeader('近传 ' + (native && native.version ? native.version : (state.version || '2.1.0')), '手机 ⇄ 电脑，局域网直传'));
           const p = document.createElement('p');
           p.style.cssText = 'margin:10px 12px 14px;font-size:12.5px;line-height:1.8;color:var(--ink-3)';
           p.textContent = '没有账号，没有云端，没有广告。文字和文件在两台设备之间直连，聊天记录只保存在电脑上。';
@@ -2326,6 +2447,49 @@
 
   // ---------- 附件面板 ----------
 
+  function insertEmoji(emoji) {
+    const start = input.selectionStart == null ? input.value.length : input.selectionStart;
+    const end = input.selectionEnd == null ? start : input.selectionEnd;
+    input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
+    const pos = start + emoji.length;
+    try {
+      input.setSelectionRange(pos, pos);
+    } catch {
+      /* ignore */
+    }
+    autoGrow();
+    updateSend();
+    saveDraft();
+    sendTyping(true);
+    buzz(4);
+  }
+
+  function closeEmoji() {
+    if (!$('emojiWrap').hidden) closeSheet($('emojiWrap'));
+  }
+
+  function openEmoji() {
+    if (!$('emojiWrap').hidden) return;
+    input.blur();
+    showSheet((sheet) => {
+      const grid = document.createElement('div');
+      grid.className = 'emoji-grid';
+      for (const emoji of EMOJIS) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = emoji;
+        b.addEventListener('click', () => insertEmoji(emoji));
+        grid.appendChild(b);
+      }
+      sheet.appendChild(grid);
+    }, { wrap: $('emojiWrap'), sheet: $('emojiSheet') });
+    const composer = $('composer');
+    if (composer) {
+      const top = composer.getBoundingClientRect().top;
+      $('emojiWrap').style.bottom = Math.max(8, window.innerHeight - top + 6) + 'px';
+    }
+  }
+
   function openAttach() {
     showSheet((sheet) => {
       const grid = document.createElement('div');
@@ -2387,7 +2551,10 @@
   input.addEventListener('input', () => {
     autoGrow();
     updateSend();
+    if (input.value.trim()) sendTyping(true);
+    else sendTyping(false);
   });
+  input.addEventListener('blur', () => sendTyping(false));
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       if (prefs.enterSend) {
@@ -2398,6 +2565,16 @@
   });
 
   $('plus').addEventListener('click', openAttach);
+  $('emojiBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!$('emojiWrap').hidden) closeEmoji();
+    else openEmoji();
+  });
+  document.addEventListener('click', (e) => {
+    if ($('emojiWrap').hidden) return;
+    if (e.target.closest('#emojiWrap') || e.target.closest('#emojiBtn')) return;
+    closeEmoji();
+  });
 
   for (const id of ['photoInput', 'cameraInput', 'fileInput']) {
     $(id).addEventListener('change', (e) => {
@@ -2454,7 +2631,7 @@
   $('selCancel').addEventListener('click', exitSelection);
   $('selDelete').addEventListener('click', deleteSelection);
 
-  for (const id of ['sheetWrap', 'attachWrap']) {
+  for (const id of ['sheetWrap', 'attachWrap', 'emojiWrap']) {
     $(id).addEventListener('click', (e) => {
       // 长按抬起手指时产生的这一次点击，不应该把刚弹出的层关掉
       if (Date.now() - lastSheetAt < 420) return;
@@ -2517,6 +2694,10 @@
     }
     if (!$('sheetWrap').hidden) {
       closeSheet($('sheetWrap'));
+      return true;
+    }
+    if ($('emojiWrap').hidden === false) {
+      closeEmoji();
       return true;
     }
     if (!$('attachWrap').hidden) {

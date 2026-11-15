@@ -18,9 +18,23 @@ const ICON = {
 
 const TICK = '<svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.4 6.3l2.3 2.3 4.9-5.2"/></svg>';
 
+const EMOJIS = [
+  '😀', '😄', '😁', '😆', '😅', '😂', '🤣', '😊', '😇', '🙂', '🙃', '😉',
+  '😌', '😍', '🥰', '😘', '😗', '😙', '😚', '😋', '😛', '😝', '😜', '🤪',
+  '🤨', '🧐', '🤓', '😎', '🥳', '😏', '😒', '😞', '😔', '😟', '😕', '🙁',
+  '😣', '😖', '😫', '😩', '🥺', '😢', '😭', '😤', '😠', '😡', '🤬', '🤯',
+  '😳', '🥵', '🥶', '😱', '😨', '😰', '😥', '😓', '🤗', '🤔', '🤭', '🤫',
+  '😶', '😐', '😑', '😬', '🙄', '😯', '😦', '😧', '😮', '😲', '🥱', '😴',
+  '🤤', '😪', '😵', '🤐', '🥴', '🤢', '🤮', '🤧', '😷', '🤒', '🤕', '👍',
+  '👎', '👌', '✌️', '🤞', '🤟', '🤘', '👏', '🙌', '🤝', '🙏', '💪', '👋',
+  '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '💔', '💯', '✨', '🎉',
+  '🔥', '⭐', '🌹', '🍀', '☕', '🍺', '🎂', '🧧', '🚀', '✅', '❌', '⚠️',
+];
+
 let state = null;
 let view = 'connect';
 let theme = 'dark';
+let font = 'm';
 let isFull = false;
 let pinned = true;
 let soundOn = true;
@@ -45,6 +59,10 @@ let lastConnectAt = 0;
 let pulseTimer = null;
 let confirmResolve = null;
 const speed = new Map();
+let typingHideTimer = null;
+let typingStopTimer = null;
+let lastTypingSent = 0;
+const RECALL_MS = 2 * 60 * 1000;
 
 // ---------- 工具 ----------
 
@@ -152,10 +170,46 @@ function play(name) {
   }
 }
 
+function hideTyping() {
+  const el = $('typing');
+  if (el) el.hidden = true;
+  clearTimeout(typingHideTimer);
+  typingHideTimer = null;
+}
+
+function showTyping(on) {
+  const el = $('typing');
+  if (!el) return;
+  clearTimeout(typingHideTimer);
+  typingHideTimer = null;
+  if (!on || !devices.length) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  typingHideTimer = setTimeout(hideTyping, 4000);
+}
+
+function sendTyping(on) {
+  clearTimeout(typingStopTimer);
+  typingStopTimer = null;
+  if (on) {
+    const now = Date.now();
+    if (now - lastTypingSent < 1800) return;
+    lastTypingSent = now;
+    api.typing(true);
+    typingStopTimer = setTimeout(() => sendTyping(false), 2500);
+  } else {
+    const wasActive = !!lastTypingSent;
+    lastTypingSent = 0;
+    if (wasActive) api.typing(false);
+  }
+}
+
 // ---------- 视图 ----------
 
 function matchQuery(m, q) {
-  return !!q && !!(
+  return !!q && !m.recalled && !!(
     (m.text && m.text.toLowerCase().includes(q))
     || (m.name && m.name.toLowerCase().includes(q))
   );
@@ -186,6 +240,7 @@ function setView(next) {
   }
   view = next;
   appEl.dataset.view = next;
+  if (next !== 'chat') closeEmoji();
   updateChrome();
   if (next === 'chat') renderAll(currentList());
   if (next === 'settings') fillSettings();
@@ -266,6 +321,14 @@ function speedText(m) {
   return `${rate} · 剩余 ${left < 60 ? Math.ceil(left) + 's' : Math.ceil(left / 60) + 'm'}`;
 }
 
+function isVideo(m) {
+  return /^video\//i.test(m.mime || '') || /\.(mp4|mov|webm|m4v|mkv)$/i.test(m.name || '');
+}
+
+function isAudio(m) {
+  return /^audio\//i.test(m.mime || '') || /\.(mp3|m4a|wav|ogg|aac|flac|opus)$/i.test(m.name || '');
+}
+
 function fileCard(m) {
   const wrap = document.createElement('div');
   wrap.className = 'file';
@@ -322,6 +385,15 @@ function messageEl(m) {
   if (m.status === 'error') row.classList.add('failed');
   if (multiMode && picked.has(m.id)) row.classList.add('picked');
 
+  if (m.recalled) {
+    row.classList.add('sys');
+    const tip = document.createElement('span');
+    tip.textContent = m.from === 'pc' ? '你撤回了一条消息' : '对方撤回了一条消息';
+    row.appendChild(tip);
+    if (multiMode) row.appendChild(pickEl());
+    return row;
+  }
+
   const b = document.createElement('div');
   b.className = 'bubble';
 
@@ -363,6 +435,34 @@ function messageEl(m) {
       const cap = document.createElement('div');
       cap.className = 'cap';
       cap.innerHTML = `<span>${esc(m.name || '')}</span><span>${fmtSize(m.size)}</span>`;
+      b.appendChild(cap);
+    } else if (m.status === 'ok' && m.path && isVideo(m)) {
+      const v = document.createElement('video');
+      v.className = 'thumb';
+      v.controls = true;
+      v.preload = 'metadata';
+      v.src = api.toFileUrl(m.path);
+      v.addEventListener('loadedmetadata', () => scrollBottom(false));
+      v.addEventListener('error', () => {
+        if (v.isConnected) v.replaceWith(fileCard(m));
+      });
+      b.appendChild(v);
+      const cap = document.createElement('div');
+      cap.className = 'cap';
+      cap.innerHTML = `<span>${esc(m.name || '视频')}</span><span>${fmtSize(m.size)}</span>`;
+      b.appendChild(cap);
+    } else if (m.status === 'ok' && m.path && isAudio(m)) {
+      const a = document.createElement('audio');
+      a.controls = true;
+      a.preload = 'metadata';
+      a.src = api.toFileUrl(m.path);
+      a.addEventListener('error', () => {
+        if (a.isConnected) a.replaceWith(fileCard(m));
+      });
+      b.appendChild(a);
+      const cap = document.createElement('div');
+      cap.className = 'cap';
+      cap.innerHTML = `<span>${esc(m.name || '音频')}</span><span>${fmtSize(m.size)}</span>`;
       b.appendChild(cap);
     } else {
       b.appendChild(fileCard(m));
@@ -498,7 +598,8 @@ function patchMessage(id, patch) {
     return;
   }
 
-  const structural = 'path' in patch || (patch.status && patch.status !== 'uploading');
+  const structural = 'path' in patch || 'recalled' in patch
+    || (patch.status && patch.status !== 'uploading');
   if (structural) {
     const fresh = messageEl(m);
     el.replaceWith(fresh);
@@ -577,10 +678,18 @@ $('lightbox').addEventListener('click', closeLightbox);
 
 // ---------- 消息操作 ----------
 
+function canRecall(m) {
+  return m.from === 'pc' && m.status === 'ok' && !m.recalled
+    && Date.now() - Number(m.ts || 0) <= RECALL_MS;
+}
+
 async function handleAction(a, m) {
   if (a === 'copy') {
     api.copyText(m.text || '');
     toast('已复制');
+  } else if (a === 'recall') {
+    const ok = await api.recallMsg(m.id);
+    toast(ok ? '已撤回' : '超过 2 分钟，无法撤回');
   } else if (a === 'open') {
     api.openPath(m.path);
   } else if (a === 'reveal') {
@@ -657,6 +766,13 @@ chat.addEventListener('contextmenu', (e) => {
   const m = byId.get(row.dataset.id);
   if (!m) return;
   const items = [];
+  if (m.recalled) {
+    items.push({ label: '多选', run: () => enterMulti(m.id) });
+    items.push({ label: '删除', danger: true, run: () => handleAction('del', m) });
+    openCtx(e.clientX, e.clientY, items);
+    return;
+  }
+  if (canRecall(m)) items.push({ label: '撤回', run: () => handleAction('recall', m) });
   if (m.kind === 'text') items.push({ label: '复制文字', run: () => handleAction('copy', m) });
   if (m.kind !== 'text' && m.path) {
     items.push({ label: '打开', run: () => handleAction('open', m) });
@@ -772,6 +888,62 @@ function updateSendState() {
   }
 }
 
+// ---------- 表情 ----------
+
+function buildEmoji() {
+  const grid = $('emojiGrid');
+  if (!grid) return;
+  for (const emoji of EMOJIS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = emoji;
+    b.addEventListener('click', () => insertEmoji(emoji));
+    grid.appendChild(b);
+  }
+}
+
+function insertEmoji(emoji) {
+  const start = input.selectionStart == null ? input.value.length : input.selectionStart;
+  const end = input.selectionEnd == null ? start : input.selectionEnd;
+  input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
+  const pos = start + emoji.length;
+  input.focus();
+  try {
+    input.setSelectionRange(pos, pos);
+  } catch {
+    /* ignore */
+  }
+  autoGrow();
+  updateSendState();
+  saveDraft();
+  sendTyping(true);
+}
+
+function closeEmoji() {
+  $('emojiPop').hidden = true;
+  $('btnEmoji').classList.remove('active');
+}
+
+function toggleEmoji() {
+  const pop = $('emojiPop');
+  const show = pop.hidden;
+  pop.hidden = !show;
+  $('btnEmoji').classList.toggle('active', show);
+  if (show) input.focus();
+}
+
+$('btnEmoji').addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleEmoji();
+});
+
+document.addEventListener('click', (e) => {
+  if ($('emojiPop').hidden) return;
+  if (e.target.closest('#emojiPop') || e.target.closest('#btnEmoji')) return;
+  closeEmoji();
+});
+
+
 function saveDraft() {
   clearTimeout(draftTimer);
   draftTimer = setTimeout(() => {
@@ -791,6 +963,7 @@ function sendText() {
     return;
   }
   api.sendText(v);
+  sendTyping(false);
   play('send');
   input.value = '';
   try {
@@ -807,7 +980,10 @@ input.addEventListener('input', () => {
   autoGrow();
   updateSendState();
   saveDraft();
+  if (input.value.trim()) sendTyping(true);
+  else sendTyping(false);
 });
+input.addEventListener('blur', () => sendTyping(false));
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
@@ -868,6 +1044,14 @@ function applyTheme(t) {
   });
 }
 
+function applyFont(next) {
+  font = ['s', 'm', 'l', 'xl'].includes(next) ? next : 'm';
+  document.documentElement.dataset.font = font;
+  document.querySelectorAll('#setFont button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.v === font);
+  });
+}
+
 function applyMode(mode) {
   isFull = mode === 'full';
   appEl.dataset.mode = isFull ? 'full' : 'compact';
@@ -900,6 +1084,10 @@ function fillSettings() {
   document.querySelectorAll('#setTheme button').forEach((b) => {
     b.classList.toggle('on', b.dataset.v === theme);
   });
+  document.querySelectorAll('#setFont button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.v === font);
+  });
+  $('setDevices').textContent = devices.length ? devices.join('、') : '未连接';
   $('setSound').classList.toggle('on', soundOn);
   $('setNotify').classList.toggle('on', !!state.notify);
   $('setAuto').classList.toggle('on', !!state.autostart);
@@ -943,6 +1131,19 @@ $('setTheme').addEventListener('click', async (e) => {
   applyTheme(b.dataset.v);
   await api.setSetting('theme', b.dataset.v);
   flashRow(b);
+});
+
+$('setFont').addEventListener('click', async (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  applyFont(b.dataset.v);
+  await api.setSetting('font', b.dataset.v);
+  flashRow(b);
+});
+
+$('setUpdate').addEventListener('click', () => {
+  api.openReleases();
+  toast('已打开下载页');
 });
 
 $('setSound').addEventListener('click', async () => {
@@ -1037,7 +1238,18 @@ $('jumpPill').addEventListener('click', () => {
 });
 
 document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'f' && view === 'chat' && isFull) {
+    e.preventDefault();
+    openSearch();
+    return;
+  }
+  if (e.ctrlKey && !e.altKey && e.key === ',') {
+    e.preventDefault();
+    setView('settings');
+    return;
+  }
   if (e.key !== 'Escape') return;
+  if (!$('emojiPop').hidden) return closeEmoji();
   if ($('lightbox').classList.contains('on')) return closeLightbox();
   if (view === 'settings') return setView(targetView());
   if (searchMode) return closeSearch();
@@ -1094,6 +1306,10 @@ function onPresence(list) {  const had = devices.length;
   devices = Array.isArray(list) ? list : [];
   updateChrome();
   appEl.classList.toggle('offline', devices.length === 0 && loaded.length > 0);
+  if (!devices.length) hideTyping();
+  if (view === 'settings') {
+    $('setDevices').textContent = devices.length ? devices.join('、') : '未连接';
+  }
   // 手机重新连上后，把电脑端已经看到的消息补一次已读回执
   if (devices.length) markSeen();
 
@@ -1120,12 +1336,18 @@ function onEvent(p) {
       // 初始化期间排队重放 + 服务端历史可能已经包含同一条，避免重复
       if (p.msg && byId.has(p.msg.id)) break;
       loaded.push(p.msg);
-      if (p.msg.from === 'phone') play('recv');
+      if (p.msg.from === 'phone') {
+        play('recv');
+        hideTyping();
+      }
       if (view !== 'chat') syncView();
       else if (searchMode && searchQuery.trim() && !matchQuery(p.msg, searchQuery.trim().toLowerCase())) break;
       else appendMessage(p.msg);
       break;
     }
+    case 'typing':
+      if (p.from === 'phone') showTyping(!!p.on);
+      break;
     case 'msg:update':
       patchMessage(p.id, p.patch);
       // 手机上传的文件只有收完（ok）才应显示已读双勾
@@ -1188,6 +1410,7 @@ function onEvent(p) {
   const s = await api.state();
   state = s;
   theme = s.theme;
+  applyFont(s.font || 'm');
   soundOn = !!s.sound;
   pinned = !!s.pinned;
   devices = s.devices || [];
@@ -1199,6 +1422,7 @@ function onEvent(p) {
   applyMode(s.isFull ? 'full' : 'compact');
   applyPin();
   applyUrl(s.url, s.qr);
+  buildEmoji();
 
   try {
     const draft = localStorage.getItem('ldDraft');

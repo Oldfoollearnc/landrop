@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld('api', {
   toFileUrl: (p) => pathToFileURL(String(p)).href,
 
   sendText: (text) => ipcRenderer.send('send-text', text),
+  typing: (on) => ipcRenderer.send('typing', on),
+  recallMsg: (id) => ipcRenderer.invoke('recall-msg', id),
+  openReleases: () => ipcRenderer.send('open-releases'),
   pickFiles: (kind) => ipcRenderer.invoke('pick-files', kind),
   sendPaths: (paths) => ipcRenderer.invoke('send-paths', paths),
   sendImageBuffer: (buffer, name) => ipcRenderer.invoke('send-image-buffer', buffer, name),

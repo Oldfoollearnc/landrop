@@ -28,7 +28,7 @@ function makeCore() {
     getUrl: () => 'http://127.0.0.1/?t=testtoken',
     publish(partial) {
       const msg = Object.assign(
-        { id: Math.random().toString(16).slice(2, 18), ts: Date.now(), status: 'ok' },
+        { id: require('crypto').randomBytes(8).toString('hex'), ts: Date.now(), status: 'ok' },
         partial
       );
       list.push(msg);
@@ -249,6 +249,8 @@ function request(port, method, urlPath, body, headers) {
 
   console.log('WebSocket 收发、回执与心跳');
   const WebSocket = require('ws');
+  const typingEvents = [];
+  server.on('typing', (p) => typingEvents.push(p));
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws${T}`);
   const inbox = [];
   ws.on('message', (raw) => inbox.push(JSON.parse(raw.toString())));
@@ -257,20 +259,44 @@ function request(port, method, urlPath, body, headers) {
     ws.once('error', reject);
   });
   ws.send(JSON.stringify({ t: 'ping', at: 123 }));
+  ws.send(JSON.stringify({ t: 'typing', on: true }));
+  ws.send(JSON.stringify({ t: 'typing', on: false }));
   ws.send(JSON.stringify({ t: 'text', text: 'ws 消息', cid: 'wcid-1' }));
   ws.send(JSON.stringify({ t: 'text', text: 'ws 消息', cid: 'wcid-1' }));
   await new Promise((r) => setTimeout(r, 400));
 
   check('心跳有 pong 回应', inbox.some((m) => m.t === 'pong'));
+  check('typing 事件转发给电脑端', typingEvents.length === 2
+    && typingEvents[0].on === true && typingEvents[1].on === false,
+  JSON.stringify(typingEvents));
   const acks = inbox.filter((m) => m.t === 'ack');
   check('每条文字都收到 ack', acks.length === 2, 'acks=' + acks.length);
   check('ack 带回落库后的消息', acks.every((m) => m.msg && m.msg.id && m.msg.kind === 'text'));
   check('重复 cid 只落库一条', core.history().filter((m) => m.src === 'wcid-1').length === 1);
   check('ack 的 id 与落库消息一致', acks.length === 2 && acks[1].id === acks[1].msg.id);
 
-  const victim = acks[0].id;
+  const recallId = acks[0].id;
+  r = await request(port, 'POST', `/api/msg/${recallId}/recall` + T, {});
+  check('2 分钟内可撤回自己发送的消息', r.code === 200 && core.get(recallId).recalled === true,
+    `code=${r.code}`);
+  r = await request(port, 'POST', `/api/msg/${recallId}/recall` + T, {});
+  check('撤回后不能再次撤回', r.code === 403, 'code=' + r.code);
+  const oldPhone = core.publish({
+    id: 'ffffffffffffffff', from: 'phone', kind: 'text', text: 'old',
+    status: 'ok', ts: Date.now() - 3 * 60 * 1000,
+  });
+  r = await request(port, 'POST', `/api/msg/${oldPhone.id}/recall` + T, {});
+  check('超过 2 分钟不能撤回', r.code === 403, 'code=' + r.code);
+  const pcMsg = core.publish({
+    id: 'eeeeeeeeeeeeee01', from: 'pc', kind: 'text', text: 'pc',
+    status: 'ok',
+  });
+  r = await request(port, 'POST', `/api/msg/${pcMsg.id}/recall` + T, {});
+  check('手机不能撤回电脑发送的消息', r.code === 403, 'code=' + r.code);
+
+  const victim = acks[1].id;
   ws.send(JSON.stringify({ t: 'delete', id: victim }));
-  await new Promise((r) => setTimeout(r, 100));
+  await new Promise((r2) => setTimeout(r2, 100));
   check('WS 删除消息同样会中止上传会话并落库删除',
     aborts.includes(victim) && !core.get(victim),
     'aborts=' + aborts.join(','));

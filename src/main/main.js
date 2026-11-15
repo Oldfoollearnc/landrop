@@ -23,6 +23,7 @@ const FULL_W = 1120;
 const FULL_H = 780;
 const PAD = 48;
 const MARGIN = 12;
+const RECALL_MS = 2 * 60 * 1000;
 
 const BG_DARK = '#0a0a0b';
 const BG_LIGHT = '#ffffff';
@@ -486,6 +487,7 @@ function statePayload() {
     url: currentUrl,
     qr: currentQr,
     theme: config.get('theme'),
+    font: config.get('font') || 'm',
     sound: !!config.get('sound'),
     notify: !!config.get('notify'),
     autostart: !!config.get('autostart'),
@@ -515,6 +517,24 @@ function registerIpc() {
     // 和手机端保持一致，避免一次粘贴把超大文本塞进历史并广播给手机
     const value = String(text || '').trim().slice(0, 20000);
     if (value) core.publish({ from: 'pc', kind: 'text', text: value });
+  });
+
+  ipcMain.on('typing', (_e, on) => {
+    if (server) server.broadcast({ t: 'typing', from: 'pc', on: !!on });
+  });
+
+  ipcMain.handle('recall-msg', (_e, id) => {
+    const msg = core.get(id);
+    if (!msg || msg.from !== 'pc' || msg.status !== 'ok' || msg.recalled
+      || Date.now() - Number(msg.ts || 0) > RECALL_MS) {
+      return false;
+    }
+    core.patch(id, { recalled: true }, true);
+    return true;
+  });
+
+  ipcMain.on('open-releases', () => {
+    shell.openExternal('https://github.com/Oldfoollearnc/landrop/releases/latest');
   });
 
   ipcMain.handle('pick-files', async (_e, kind) => {
@@ -597,6 +617,8 @@ function registerIpc() {
   ipcMain.handle('settings:set', (_e, key, value) => {
     if (key === 'theme') {
       core.setTheme(value);
+    } else if (key === 'font') {
+      config.patch({ font: ['s', 'm', 'l', 'xl'].includes(value) ? value : 'm' });
     } else if (key === 'sound' || key === 'notify') {
       config.patch({ [key]: !!value });
       send('ev', { t: 'setting', key, value: !!value });
@@ -786,6 +808,7 @@ async function boot() {
   createTray();
   registerIpc();
   server.on('presence', (devices) => send('ev', { t: 'presence', devices }));
+  server.on('typing', (p) => send('ev', { t: 'typing', from: 'phone', on: !!p.on }));
   // 手机在下载电脑上的文件时，把进度推给界面
   server.on('served', (p) => send('ev', {
     t: 'download', id: p.id, sent: p.sent, total: p.total, done: p.done, aborted: p.aborted,

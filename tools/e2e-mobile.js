@@ -243,7 +243,11 @@ async function main() {
         returnByValue: true,
       }, sessionId);
       if (r.exceptionDetails) {
-        throw new Error(r.exceptionDetails.text || JSON.stringify(r.exceptionDetails));
+        throw new Error(
+          (r.exceptionDetails.exception && r.exceptionDetails.exception.description)
+          || r.exceptionDetails.text
+          || JSON.stringify(r.exceptionDetails)
+        );
       }
       return r.result.value;
     }
@@ -301,6 +305,22 @@ async function main() {
     const first = Array.from({ length: total }, (_, i) => `E2E-${stamp}-A${i + 1}`);
     const second = Array.from({ length: total }, (_, i) => `E2E-${stamp}-B${i + 1}`);
 
+    // ---------- 表情面板 ----------
+    const emoji = await evaluate(`(() => {
+      const btn = document.getElementById('emojiBtn');
+      btn.click();
+      const cell = document.querySelector('#emojiSheet .emoji-grid button');
+      if (!cell) return 'no-grid';
+      cell.click();
+      const v = document.getElementById('input').value;
+      const input = document.getElementById('input');
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      btn.click();
+      return v;
+    })()`);
+    check('表情面板能插入表情', !!emoji && emoji.includes('😀'), `value=${emoji}`);
+
     // ---------- 第一轮：连发 ----------
     for (const t of first) await send(t);
     let st = await waitSettled(first);
@@ -327,6 +347,26 @@ async function main() {
     const all = first.concat(second);
     const counts = all.map((m) => msgs.filter((x) => x.text === m).length);
     check('服务端每条消息只落库一条（无重复/无丢失）', counts.every((n) => n === 1), `counts=${counts.join(',')}`);
+
+    // ---------- 撤回 ----------
+    const recallText = first[0];
+    const recallState = await evaluate(`(async () => {
+      const row = [...document.querySelectorAll('.msg.out')]
+        .find((r) => r.innerText.includes(${JSON.stringify(recallText)}));
+      if (!row) return 'no-row';
+      row.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: 120, clientY: 120,
+      }));
+      await new Promise((r) => setTimeout(r, 150));
+      const btn = [...document.querySelectorAll('#sheet .row')]
+        .find((b) => b.innerText.includes('撤回'));
+      if (!btn) return 'no-recall';
+      btn.click();
+      await new Promise((r) => setTimeout(r, 600));
+      return [...document.querySelectorAll('.msg.sys')].some((r) => r.innerText.includes('撤回'))
+        ? 'ok' : 'no-sys';
+    })()`, true);
+    check('消息可在 2 分钟内撤回', recallState === 'ok', `state=${recallState}`);
 
     // ---------- 同 cid 重发：返回 duplicate 且带 msg ----------
     const cid = `e2e-dup-${stamp}`;

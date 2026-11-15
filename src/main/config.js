@@ -16,6 +16,7 @@ function defaults() {
   return {
     token: crypto.randomBytes(12).toString('base64url'),
     theme: 'dark',
+    font: 'm',
     sound: true,
     notify: true,
     saveDir: path.join(app.getPath('downloads'), 'NearSend'),
