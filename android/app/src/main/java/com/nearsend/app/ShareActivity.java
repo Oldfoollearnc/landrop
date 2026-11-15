@@ -54,14 +54,30 @@ public class ShareActivity extends AppCompatActivity {
         root = new FrameLayout(this);
         root.setBackgroundColor(0x99000000);
         setContentView(root);
-        parse(getIntent());
+        final Intent incoming = getIntent();
+        // 从相册/文件管理器分享大视频时，复制到缓存可能要好几百毫秒甚至更久，
+        // 必须放到后台线程，否则主线程卡住会弹 ANR
+        Bg.run(new Runnable() {
+            @Override
+            public void run() {
+                collect(incoming);
+                MainThread.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (isFinishing() || isDestroyed()) return;
+                        if (files.isEmpty() && TextUtils.isEmpty(text)) {
+                            finish();
+                            return;
+                        }
+                        showPicker();
+                    }
+                });
+            }
+        });
     }
 
-    private void parse(Intent intent) {
-        if (intent == null) {
-            finish();
-            return;
-        }
+    private void collect(Intent intent) {
+        if (intent == null) return;
         String action = intent.getAction();
         if (Intent.ACTION_SEND.equals(action)) {
             String type = intent.getType() == null ? "" : intent.getType();
@@ -77,34 +93,31 @@ public class ShareActivity extends AppCompatActivity {
             String type = intent.getType() == null ? "" : intent.getType();
             if (uris != null) for (Uri u : uris) addUri(u, type);
         }
-        if (files.isEmpty() && TextUtils.isEmpty(text)) {
-            finish();
-            return;
-        }
-        showPicker();
     }
 
     private void addUri(Uri uri, String type) {
+        File out = null;
         try {
             String name = displayName(uri);
             String mime = getContentResolver().getType(uri);
             if (mime == null || mime.isEmpty()) mime = type;
             File dir = new File(getCacheDir(), "incoming");
             if (!dir.exists() && !dir.mkdirs()) return;
-            File out = new File(dir, System.currentTimeMillis() + "-" + Downloader.safeName(name));
             InputStream in = getContentResolver().openInputStream(uri);
             if (in == null) return;
-            FileOutputStream os = new FileOutputStream(out);
-            byte[] buf = new byte[64 * 1024];
-            int n;
-            while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
-            os.flush();
-            os.close();
-            in.close();
+            out = new File(dir, System.currentTimeMillis() + "-" + Downloader.safeName(name));
+            try (InputStream input = in; FileOutputStream os = new FileOutputStream(out)) {
+                byte[] buf = new byte[64 * 1024];
+                int n;
+                while ((n = input.read(buf)) > 0) os.write(buf, 0, n);
+                os.flush();
+            }
             files.add(out);
+            out = null;
             names.add(Downloader.safeName(name));
             mimes.add(mime == null ? "" : mime);
         } catch (Exception e) {
+            if (out != null) out.delete();
             android.util.Log.e("NearSend", "share read failed: " + e);
         }
     }

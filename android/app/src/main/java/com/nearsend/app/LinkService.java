@@ -39,7 +39,7 @@ public class LinkService extends Service {
     private boolean foreground;
     private int retry = 1200;
     private int msgCount;
-    private String lastText = "";
+    private String lastMsgId = "";
 
     private final Handler h = new Handler(Looper.getMainLooper());
     private final Runnable retryTask = new Runnable() {
@@ -108,6 +108,19 @@ public class LinkService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? null : intent.getAction();
+        if (action == null) {
+            // 系统因 START_STICKY 重启服务：按当前设置恢复默认设备，别让服务空转
+            String id = DeviceStore.get().backgroundDeviceId();
+            if (!Prefs.backgroundReceive() || id == null || id.isEmpty()) {
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+            deviceId = id;
+            receiving = true;
+            goForeground();
+            connectIfNeeded();
+            return START_STICKY;
+        }
         if (ACTION_ENSURE.equals(action)) {
             deviceId = intent.getStringExtra(EXTRA_ID);
             receiving = true;
@@ -190,6 +203,8 @@ public class LinkService extends Service {
 
     private void connectIfNeeded() {
         if (!receiving) return;
+        // 聊天页自己的 WebSocket 正在服务同一台电脑时，不需要再开一条
+        if (App.chatVisible && deviceId != null && deviceId.equals(App.chatDeviceId)) return;
         if (deviceId == null || deviceId.isEmpty()) {
             deviceId = DeviceStore.get().backgroundDeviceId();
             if (deviceId == null || deviceId.isEmpty()) return;
@@ -252,6 +267,11 @@ public class LinkService extends Service {
         Device d = deviceId == null ? null : DeviceStore.get().byId(deviceId);
         String title = d == null ? getString(R.string.app_name) : d.displayName();
 
+        // 按消息 id 去重。只比文字会把「连发两条一样的话」当重复静默吞掉。
+        String mid = m.optString("id");
+        if (!mid.isEmpty() && mid.equals(lastMsgId)) return;
+        lastMsgId = mid;
+
         String kind = m.optString("kind");
         String body;
         if ("text".equals(kind)) {
@@ -263,8 +283,6 @@ public class LinkService extends Service {
         }
         if (!Prefs.notifyPreview()) body = getString(R.string.notif_hidden);
         if (body.length() > 160) body = body.substring(0, 160) + "…";
-        if (body.equals(lastText)) return;
-        lastText = body;
 
         Intent open = new Intent(this, ChatActivity.class);
         open.putExtra("deviceId", deviceId);

@@ -33,12 +33,24 @@ class Store extends EventEmitter {
 
   load() {
     let raw = '';
+    let fileAt = 0;
     try {
       raw = fs.readFileSync(this.file, 'utf8');
+      fileAt = fs.statSync(this.file).mtimeMs;
     } catch {
-      return this;
+      /* 文件不存在或暂时读不到 */
     }
-    const lines = raw.split('\n').filter(Boolean);
+    let lines = raw.split('\n').filter(Boolean);
+    if (!lines.length && this.encrypted) {
+      // 上一次启动时 safeStorage 可能只是暂时不可用，记录被 park 成 locked 文件。
+      // 现在密钥能用了就把它接回来，别让用户以为历史丢了。
+      // 比当前空 messages.jsonl 更旧的 locked 文件不接：用户可能已经清空过记录。
+      const restored = this.restoreLocked(fileAt);
+      if (restored) {
+        raw = restored;
+        lines = raw.split('\n').filter(Boolean);
+      }
+    }
     if (!lines.length) return this;
 
     const encCount = lines.filter((l) => l.startsWith(PREFIX)).length;
@@ -83,6 +95,54 @@ class Store extends EventEmitter {
     return this;
   }
 
+  /**
+   * 查找被 parkLocked 留下的 messages.locked-<ts>.jsonl。
+   * 只有当前密钥能把其中所有密文行都解开时才接回来，避免误动别的账户的记录。
+   */
+  restoreLocked(notOlderThan) {
+    try {
+      const dir = path.dirname(this.file);
+      const candidates = fs.readdirSync(dir)
+        .map((name) => {
+          const m = /^messages\.locked-(\d+)\.jsonl$/.exec(name);
+          return m ? { name, at: Number(m[1]) } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.at - a.at);
+
+      for (const { name, at } of candidates) {
+        // 空 messages.jsonl 的修改时间比 locked 新 = 用户在 park 之后清空过记录
+        if (at <= notOlderThan) continue;
+        const file = path.join(dir, name);
+        let raw;
+        try {
+          raw = fs.readFileSync(file, 'utf8');
+        } catch {
+          continue;
+        }
+        const lines = raw.split('\n').filter(Boolean);
+        const enc = lines.filter((l) => l.startsWith(PREFIX));
+        if (!enc.length) continue;
+        let ok = true;
+        for (const line of enc) {
+          try {
+            this.vault.decrypt(line);
+          } catch {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok) continue;
+        fs.renameSync(file, this.file);
+        console.warn('[store] 已接回被锁定的聊天记录:', name);
+        return raw;
+      }
+    } catch (err) {
+      console.error('[store] 恢复锁定记录失败', err.message);
+    }
+    return null;
+  }
+
   applyEvent(ev) {
     if (ev.op === 'add' && ev.msg) {
       this.list.push(ev.msg);
@@ -115,7 +175,7 @@ class Store extends EventEmitter {
     try {
       fs.copyFileSync(this.file, bak);
       const tmp = `${this.file}.tmp`;
-      fs.writeFileSync(tmp, lines.map((l) => this.vault.encrypt(l)).join('\n') + '\n');
+      fs.writeFileSync(tmp, lines.map((l) => (l.startsWith(PREFIX) ? l : this.vault.encrypt(l))).join('\n') + '\n');
       fs.renameSync(tmp, this.file);
       const check = fs.readFileSync(this.file, 'utf8').split('\n').filter(Boolean);
       if (check.length !== lines.length) throw new Error('回读条数不一致');

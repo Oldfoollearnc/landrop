@@ -74,9 +74,14 @@ function fullBounds() {
   const wa = displayForCursor().workArea;
   const width = Math.min(FULL_W, wa.width - PAD);
   const height = Math.min(FULL_H, wa.height - PAD);
-  let x = Number(config.get('fullX'));
-  let y = Number(config.get('fullY'));
-  const inside = Number.isFinite(x) && Number.isFinite(y)
+  // 默认配置是 null；Number(null) === 0，不能当成「上次在左上角」
+  const savedX = config.get('fullX');
+  const savedY = config.get('fullY');
+  const saved = typeof savedX === 'number' && typeof savedY === 'number';
+  let x = saved ? savedX : 0;
+  let y = saved ? savedY : 0;
+  const inside = saved
+    && Number.isFinite(x) && Number.isFinite(y)
     && x > wa.x - 60 && y > wa.y - 60
     && x + width < wa.x + wa.width + 60
     && y + height < wa.y + wa.height + 60;
@@ -109,17 +114,26 @@ const core = {
     const msg = store.add(partial);
     if (server) server.broadcast({ t: 'msg', msg });
     send('ev', { t: 'msg', msg });
-    if (partial.from === 'phone' && win && (!win.isVisible() || !win.isFocused())) {
+    // 上传中的文件只通知一次，等收完（status 变 ok）再提醒，避免传一半就报「收到」
+    if (partial.from === 'phone' && partial.status !== 'uploading'
+      && win && (!win.isVisible() || !win.isFocused())) {
       setUnread(unread + 1);
       notify(msg);
     }
     return msg;
   },
   patch(id, changes, persist) {
+    const before = store.get(id);
+    const wasOk = !!(before && before.status === 'ok');
     const msg = store.patch(id, changes, persist);
     if (!msg) return null;
     if (server) server.broadcast({ t: 'msg:update', id, patch: changes });
     send('ev', { t: 'msg:update', id, patch: changes });
+    if (!wasOk && changes.status === 'ok' && msg.from === 'phone'
+      && win && (!win.isVisible() || !win.isFocused())) {
+      setUnread(unread + 1);
+      notify(msg);
+    }
     return msg;
   },
   remove(id, purge) {
@@ -131,6 +145,7 @@ const core = {
     return ok;
   },
   clear() {
+    if (uploads) uploads.abortAll();
     store.clear(false);
     if (server) server.broadcast({ t: 'clear' });
     send('ev', { t: 'clear' });
@@ -393,31 +408,47 @@ function refreshUrl(force) {
 }
 
 function checkFirewall() {
-  execFile(
-    'netsh',
-    ['advfirewall', 'firewall', 'show', 'rule', 'name=NearSend'],
-    { windowsHide: true },
-    (err, stdout) => {
-      firewallOk = !err && /NearSend/i.test(String(stdout || ''));
-      send('ev', { t: 'firewall', ok: firewallOk });
-    }
-  );
+  return new Promise((resolve) => {
+    execFile(
+      'netsh',
+      ['advfirewall', 'firewall', 'show', 'rule', 'name=NearSend'],
+      { windowsHide: true },
+      (err, stdout) => {
+        firewallOk = !err && /NearSend/i.test(String(stdout || ''));
+        send('ev', { t: 'firewall', ok: firewallOk });
+        resolve(firewallOk);
+      }
+    );
+  });
+}
+
+function firewallExe() {
+  // 便携版每次运行都解压到新的临时目录，必须给外层 exe 放通
+  return process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
 }
 
 function openFirewall() {
-  const exe = process.execPath;
+  const exe = firewallExe();
+  // PowerShell 单引号字符串里 ' 要写成 ''
+  const safeExe = exe.replace(/'/g, "''");
   const script = [
     "Start-Process -FilePath netsh -Verb RunAs -ArgumentList @(",
     "'advfirewall','firewall','add','rule','name=NearSend','dir=in','action=allow',",
-    `'program=${exe}','enable=yes','profile=any')`,
+    `'program=${safeExe}','enable=yes','profile=any')`,
   ].join('');
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   return new Promise((resolve) => {
     execFile('powershell', ['-NoProfile', '-EncodedCommand', encoded], { windowsHide: true }, () => {
-      setTimeout(() => {
-        checkFirewall();
-        resolve(true);
-      }, 1500);
+      // UAC 弹窗可能停留好几秒：轮询几次，等用户点完再给结论
+      let tries = 0;
+      const poll = () => {
+        checkFirewall().then((ok) => {
+          tries += 1;
+          if (ok || tries >= 8) return resolve(ok);
+          return setTimeout(poll, 700);
+        });
+      };
+      setTimeout(poll, 1200);
     });
   });
 }
@@ -481,7 +512,8 @@ function registerIpc() {
   ipcMain.handle('state', () => statePayload());
 
   ipcMain.on('send-text', (_e, text) => {
-    const value = String(text || '').trim();
+    // 和手机端保持一致，避免一次粘贴把超大文本塞进历史并广播给手机
+    const value = String(text || '').trim().slice(0, 20000);
     if (value) core.publish({ from: 'pc', kind: 'text', text: value });
   });
 
@@ -501,10 +533,11 @@ function registerIpc() {
 
   ipcMain.handle('send-image-buffer', (_e, buffer, name) => {
     try {
-      const dir = path.join(app.getPath('temp'), 'NearSend');
+      // 不能放 %TEMP%：系统清理临时目录后，聊天记录里的图片就再也打不开了
+      const dir = path.join(app.getPath('userData'), 'outbox');
       fs.mkdirSync(dir, { recursive: true });
-      const safe = String(name || 'paste.png').replace(/[\\/:*?"<>|]/g, '_');
-      const file = path.join(dir, `${Date.now()}-${safe}`);
+      const safe = String(name || 'paste.png').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_');
+      const file = path.join(dir, `${Date.now()}-${crypto.randomBytes(3).toString('hex')}-${safe}`);
       fs.writeFileSync(file, Buffer.from(buffer));
       return publishFiles([file]).map((m) => m.id);
     } catch (err) {
@@ -518,7 +551,11 @@ function registerIpc() {
     return publishFiles(paths).map((m) => m.id);
   });
 
-  ipcMain.on('delete', (_e, { id, purge }) => core.remove(id, !!purge));
+  ipcMain.on('delete', (_e, { id, purge }) => {
+    // 删掉上传中的气泡时一并结束上传，避免文件继续写进保存目录
+    if (uploads) uploads.abort(id);
+    core.remove(id, !!purge);
+  });
 
   // 电脑端读到手机消息后回执「已读」：手机气泡上会出现双勾
   ipcMain.on('seen', (_e, ids) => {
@@ -593,6 +630,7 @@ function registerIpc() {
   });
 
   ipcMain.handle('settings:clear', (_e, purgeFiles) => {
+    if (uploads) uploads.abortAll();
     store.clear(!!purgeFiles);
     if (server) server.broadcast({ t: 'clear' });
     send('ev', { t: 'clear' });
@@ -733,6 +771,11 @@ async function boot() {
 
   vault = new Vault(app.getPath('userData')).init();
   store = new Store(path.join(app.getPath('userData'), 'messages.jsonl'), vault).load();
+  // 上次进程退出时没传完的文件，服务端已没有上传会话可供续传：
+  // 启动时统一标成失败，否则气泡会永远停在「上传中 37%」。
+  for (const m of store.messages()) {
+    if (m.status === 'uploading') store.patch(m.id, { status: 'error' }, true);
+  }
   uploads = new Uploads(() => config.get('saveDir'));
   server = new LanServer({ core, uploads, token: config.get('token') });
 
@@ -744,7 +787,9 @@ async function boot() {
   registerIpc();
   server.on('presence', (devices) => send('ev', { t: 'presence', devices }));
   // 手机在下载电脑上的文件时，把进度推给界面
-  server.on('served', (p) => send('ev', { t: 'download', id: p.id, sent: p.sent, total: p.total, done: p.done }));
+  server.on('served', (p) => send('ev', {
+    t: 'download', id: p.id, sent: p.sent, total: p.total, done: p.done, aborted: p.aborted,
+  }));
   refreshUrl(true);
   setTimeout(checkFirewall, 800);
 

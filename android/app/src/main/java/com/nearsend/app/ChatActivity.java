@@ -434,7 +434,8 @@ public class ChatActivity extends AppCompatActivity {
     protected void onStop() {
         super.onStop();
         App.chatVisible = false;
-        if (device != null) LinkService.resumeReceiving(this, device.id);
+        // 后台连接由 App 在所有 Activity 都停止后统一恢复。
+        // 这里直接恢复会在「聊天页被设置页盖住」时也开第二条 WS，导致前台重复收通知。
     }
 
     /** 先让网页关掉自己弹出的层（图片预览、长按菜单、搜索），没有再退出页面。 */

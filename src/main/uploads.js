@@ -14,8 +14,8 @@ function safeName(input) {
     .trim()
     .replace(/[. ]+$/, '');
   if (!n) n = 'file';
-  const stem = n.replace(/\.[^.]*$/, '');
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)) n = '_' + n;
+  // Windows 保留设备名看的是第一个点之前的部分：CON.txt、CON.tar.gz 都不合法
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(n.split('.')[0])) n = '_' + n;
   if (n.length > 140) {
     const ext = path.extname(n).slice(0, 16);
     n = n.slice(0, 140 - ext.length) + ext;
@@ -23,11 +23,16 @@ function safeName(input) {
   return n;
 }
 
-function uniquePath(dir, name) {
+function reserveKey(p) {
+  // Windows / macOS 文件系统大小写不敏感，'A.txt' 和 'a.txt' 会落到同一个文件
+  return process.platform === 'win32' || process.platform === 'darwin' ? p.toLowerCase() : p;
+}
+
+function uniquePath(dir, name, reserved) {
   const { name: stem, ext } = path.parse(name);
   let candidate = path.join(dir, name);
   let i = 2;
-  while (fs.existsSync(candidate)) {
+  while (fs.existsSync(candidate) || (reserved && reserved.has(reserveKey(candidate)))) {
     candidate = path.join(dir, `${stem} (${i})${ext}`);
     i += 1;
   }
@@ -39,6 +44,8 @@ class Uploads extends EventEmitter {
     super();
     this.getSaveDir = getSaveDir;
     this.sessions = new Map();
+    // finish 是异步 rename；两个同名文件同时完成时，先占住目标名，避免互相覆盖
+    this.reserved = new Set();
     this.cleanup();
   }
 
@@ -119,17 +126,37 @@ class Uploads extends EventEmitter {
     return task;
   }
 
-  async finish(id) {
+  /**
+   * 同一个上传的 /done 可能因为响应丢失被重发；共用同一个完成 Promise，
+   * 避免第二次 close/rename 已经删掉的临时文件。
+   */
+  finish(id) {
     const s = this.sessions.get(id);
-    if (!s) throw new Error('no such upload');
+    if (!s) return Promise.reject(new Error('no such upload'));
+    if (!s.finishing) {
+      s.finishing = this.doFinish(s).catch((err) => {
+        s.finishing = null;
+        throw err;
+      });
+    }
+    return s.finishing;
+  }
+
+  async doFinish(s) {
     await s.chain.catch(() => {});
     if (s.size && s.offset !== s.size) {
       throw new Error(`incomplete: ${s.offset}/${s.size}`);
     }
     await s.fd.close();
-    const target = uniquePath(this.getSaveDir(), s.name);
-    await fsp.rename(s.tmpPath, target);
-    this.sessions.delete(id);
+    const target = uniquePath(this.getSaveDir(), s.name, this.reserved);
+    const key = reserveKey(target);
+    this.reserved.add(key);
+    try {
+      await fsp.rename(s.tmpPath, target);
+    } finally {
+      this.reserved.delete(key);
+    }
+    this.sessions.delete(s.id);
     return { path: target, name: path.basename(target), size: s.offset, mime: s.mime };
   }
 
@@ -153,6 +180,11 @@ class Uploads extends EventEmitter {
       /* ignore */
     }
     fs.unlink(s.tmpPath, () => {});
+  }
+
+  /** 清空历史 / 退出程序时结束所有残留上传，别让半截文件继续写盘 */
+  abortAll() {
+    for (const id of [...this.sessions.keys()]) this.abort(id);
   }
 }
 

@@ -70,17 +70,26 @@ public class MainActivity extends AppCompatActivity {
         Ui.setStatusBarIcons(this, !night);
         buildUi();
         DeviceStore.get().addListener(onStoreChanged);
-        askNotification();
+        askPermissions();
         if (!Prefs.onboardingDone()) {
             startActivityForResult(new Intent(this, OnboardingActivity.class), REQ_ONBOARD);
+        } else if (wantsScan(getIntent())) {
+            openScan();
         }
         render();
+    }
+
+    /** 桌面快捷方式里的 <extra> 是字符串 "true"，不是 Boolean */
+    private boolean wantsScan(Intent intent) {
+        if (intent == null) return false;
+        return intent.getBooleanExtra("scan", false)
+                || "true".equals(String.valueOf(intent.getStringExtra("scan")));
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        if (intent != null && intent.getBooleanExtra("scan", false)) {
+        if (wantsScan(intent)) {
             openScan();
         }
     }
@@ -107,10 +116,19 @@ public class MainActivity extends AppCompatActivity {
         return mode == Configuration.UI_MODE_NIGHT_YES;
     }
 
-    private void askNotification() {
+    private void askPermissions() {
+        List<String> want = new ArrayList<>();
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 900);
+            want.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+        // Android 9 及以下保存到公共「下载/相册」需要写外部存储权限
+        if (Build.VERSION.SDK_INT <= 28
+                && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            want.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        }
+        if (!want.isEmpty()) {
+            requestPermissions(want.toArray(new String[0]), 900);
         }
     }
 

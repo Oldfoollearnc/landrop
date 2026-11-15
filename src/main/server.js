@@ -116,7 +116,19 @@ class LanServer extends EventEmitter {
     this.server.headersTimeout = 30000;
 
     this.wss = new WebSocketServer({ noServer: true });
-    this.server.on('upgrade', (req, socket, head) => this.onUpgrade(req, socket, head));
+    this.server.on('upgrade', (req, socket, head) => {
+      try {
+        this.onUpgrade(req, socket, head);
+      } catch (err) {
+        // 畸形请求不能把整个进程带崩
+        console.error('[ws] upgrade failed', err.message);
+        try {
+          socket.destroy();
+        } catch {
+          /* ignore */
+        }
+      }
+    });
 
     // 手机断线重发时用 cid 去重，避免同一条文字出现两次
     this.recentCids = new Map();
@@ -155,6 +167,7 @@ class LanServer extends EventEmitter {
     clearInterval(this.hbTimer);
     for (const c of this.clients) c.ws.terminate();
     this.clients.clear();
+    if (this.uploads.abortAll) this.uploads.abortAll();
     this.wss.close();
     this.server.close();
   }
@@ -249,6 +262,11 @@ class LanServer extends EventEmitter {
     }
 
     if (p.startsWith('/m/')) {
+      // 浏览器抓取 PWA manifest / 图标时按规范不带 Cookie（credentials mode = omit），
+      // 若也要求令牌，「添加到主屏幕」会退化成普通书签。这两个文件不含隐私数据。
+      if (p === '/m/manifest.webmanifest' || p === '/m/icon.png') {
+        return this.serveStatic(res, p);
+      }
       if (!this.authorized(req, url)) return text(res, 403, 'Forbidden');
       return this.serveStatic(res, p);
     }
@@ -301,6 +319,7 @@ class LanServer extends EventEmitter {
       }
 
       if (p === '/api/clear' && req.method === 'POST') {
+        if (this.uploads.abortAll) this.uploads.abortAll();
         this.core.clear();
         return json(res, 200, { ok: true });
       }
@@ -310,15 +329,19 @@ class LanServer extends EventEmitter {
         const meta = JSON.parse(body.toString('utf8') || '{}');
         if (!meta.name) return json(res, 400, { error: 'name required' });
         const size = Number(meta.size) || 0;
-        const session = await this.uploads.init(meta);
+        // mime 会进 HTTP 响应头；清掉换行/控制字符，防止写头失败或头注入
+        const mime = typeof meta.mime === 'string'
+          ? meta.mime.replace(/[\r\n\x00-\x1f\x7f]/g, '').trim().slice(0, 120)
+          : '';
+        const session = await this.uploads.init(Object.assign({}, meta, { mime }));
         this.core.publish({
           id: session.id,
           from: 'phone',
           src: String(meta.cid || ''),
-          kind: kindOf(meta.mime, session.name),
+          kind: kindOf(mime, session.name),
           name: session.name,
           size,
-          mime: meta.mime || '',
+          mime,
           status: 'uploading',
           progress: 0,
         });
@@ -343,7 +366,13 @@ class LanServer extends EventEmitter {
       const doneMatch = p.match(/^\/api\/upload\/([a-f0-9]{16})\/done$/);
       if (doneMatch && req.method === 'POST') {
         const id = doneMatch[1];
+        const existing = this.core.get(id);
+        if (existing && existing.status === 'ok' && existing.path) {
+          // /done 重发：文件已经落盘，直接把结果回给客户端
+          return json(res, 200, { id, name: existing.name, size: existing.size });
+        }
         const file = await this.uploads.finish(id);
+        this.lastProgress.delete(id);
         this.core.patch(
           id,
           { path: file.path, name: file.name, size: file.size, status: 'ok', progress: 1 },
@@ -355,6 +384,9 @@ class LanServer extends EventEmitter {
       const delMatch = p.match(/^\/api\/msg\/([a-f0-9]{16})$/);
       if (delMatch && req.method === 'DELETE') {
         const purge = url.searchParams.get('purge') === '1';
+        // 删除的如果是正在上传的消息，顺手结束上传会话，避免文件继续落盘却没人认领
+        this.uploads.abort(delMatch[1]);
+        this.lastProgress.delete(delMatch[1]);
         const ok = this.core.remove(delMatch[1], purge);
         return json(res, ok ? 200 : 404, { ok });
       }
@@ -410,7 +442,10 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
       return text(res, 404, 'File missing');
     }
     const ext = path.extname(msg.path).toLowerCase();
-    const mime = msg.mime || MIME[ext] || 'application/octet-stream';
+    const declared = typeof msg.mime === 'string' && msg.mime.includes('/')
+      ? msg.mime.replace(/[\r\n\x00-\x1f\x7f]/g, '').slice(0, 120)
+      : '';
+    const mime = declared || MIME[ext] || 'application/octet-stream';
     const headers = {
       'Content-Type': mime,
       'Accept-Ranges': 'bytes',
@@ -423,13 +458,29 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
         `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(msg.name || path.basename(msg.path))}`;
     }
 
+    const head = req.method === 'HEAD';
+
     const range = req.headers.range;
     if (range) {
       const m = /^bytes=(\d*)-(\d*)$/.exec(range);
       if (m) {
-        let start = m[1] ? Number(m[1]) : 0;
-        let end = m[2] ? Number(m[2]) : stat.size - 1;
-        if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= stat.size) {
+        let start;
+        let end;
+        if (!m[1] && !m[2]) {
+          res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` });
+          return res.end();
+        }
+        if (!m[1]) {
+          // bytes=-N：最后 N 个字节，不是前 N 个
+          const suffix = Number(m[2]);
+          start = Math.max(0, stat.size - suffix);
+          end = stat.size - 1;
+        } else {
+          start = Number(m[1]);
+          end = m[2] ? Number(m[2]) : stat.size - 1;
+        }
+        if (!Number.isFinite(start) || !Number.isFinite(end)
+          || start > end || start >= stat.size) {
           res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` });
           return res.end();
         }
@@ -437,12 +488,15 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
         headers['Content-Range'] = `bytes ${start}-${end}/${stat.size}`;
         headers['Content-Length'] = end - start + 1;
         res.writeHead(206, headers);
+        // HEAD 只回头部；继续读文件会让电脑端误报「手机已下载」
+        if (head) return res.end();
         return this.streamFile(res, msg.path, { start, end }, id, inline);
       }
     }
 
     headers['Content-Length'] = stat.size;
     res.writeHead(200, headers);
+    if (head) return res.end();
     return this.streamFile(res, msg.path, {}, id, inline);
   }
 
@@ -465,7 +519,7 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
     const finish = (done) => {
       if (finished) return;
       finished = true;
-      if (!inline) this.emit('served', { id, sent, total, done });
+      if (!inline) this.emit('served', { id, sent, total, done, aborted: !done && sent < total });
     };
     stream.on('data', (chunk) => {
       sent += chunk.length;
@@ -477,7 +531,11 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
       }
     });
     stream.on('end', () => finish(true));
-    stream.on('error', () => finish(false));
+    stream.on('error', () => {
+      finish(false);
+      // pipe 在源出错时不会自动结束响应；不 destroy 的话客户端会一直卡到超时
+      res.destroy();
+    });
     res.on('close', () => {
       if (sent < total) stream.destroy();
       finish(sent >= total);
@@ -509,7 +567,13 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
       ws.on('pong', () => {
         client.alive = true;
       });
-      ws.on('message', (raw) => this.onClientMessage(client, raw));
+      ws.on('message', (raw) => {
+        try {
+          this.onClientMessage(client, raw);
+        } catch (err) {
+          console.error('[ws] message failed', err.message);
+        }
+      });
       ws.on('close', () => {
         this.clients.delete(client);
         this.broadcastPresence();
@@ -569,6 +633,9 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
       return;
     }
     if (data.t === 'delete' && typeof data.id === 'string') {
+      // 和 HTTP DELETE 保持一致：删除上传中的消息时结束上传会话
+      this.uploads.abort(data.id);
+      this.lastProgress.delete(data.id);
       this.core.remove(data.id, false);
       return;
     }
@@ -586,7 +653,12 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
   }
 
   send(ws, obj) {
-    if (ws.readyState === 1) ws.send(JSON.stringify(obj));
+    if (ws.readyState !== 1) return;
+    try {
+      ws.send(JSON.stringify(obj));
+    } catch {
+      /* 连接刚断开时 send 可能抛错，close 事件会负责清理 */
+    }
   }
 
   /** 按手机端的 cid 找回已经落库的那条文字消息 */
@@ -631,7 +703,12 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
   broadcast(obj) {
     const payload = JSON.stringify(obj);
     for (const c of this.clients) {
-      if (c.ws.readyState === 1) c.ws.send(payload);
+      if (c.ws.readyState !== 1) continue;
+      try {
+        c.ws.send(payload);
+      } catch {
+        /* 单个连接失败不影响其他设备 */
+      }
     }
   }
 

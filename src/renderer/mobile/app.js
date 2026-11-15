@@ -83,6 +83,7 @@
     dl: new Map(),      // 消息 id -> 下载进度
     dlIds: new Map(),   // 消息 id -> 系统下载任务 id
     saved: new Set(),
+    cancelUploads: new Set(), // cid -> 用户已取消，上传循环看到后停止
   };
 
   let ws = null;
@@ -157,10 +158,14 @@
   const isMedia = (m) => m.kind === 'image' || m.kind === 'file' || m.kind === 'video';
 
   function buzz(ms = 8) {
-    if (!prefs.haptics) return;
     try {
-      if (native && window.NearSend && window.NearSend.vibrate) window.NearSend.vibrate(ms);
-      else if (navigator.vibrate) navigator.vibrate(ms);
+      // 原生容器里以 App 的「震动反馈」设置为准，网页偏好可能是旧版本留下的
+      if (native && window.NearSend && window.NearSend.vibrate) {
+        window.NearSend.vibrate(ms);
+        return;
+      }
+      if (!prefs.haptics) return;
+      if (navigator.vibrate) navigator.vibrate(ms);
     } catch {
       /* ignore */
     }
@@ -475,6 +480,14 @@
     const row = document.createElement('div');
     row.className = 'msg ' + (isMine(m) ? 'out' : 'in') + (m.status === 'error' ? ' failed' : '');
     row.dataset.id = m.id;
+    // 长按弹出的操作面板在松手后仍可能补发一次 click（打开大图/链接/重发）。
+    // 在捕获阶段吞掉这次 click，避免面板和 viewer 同时打开。
+    row.addEventListener('click', (e) => {
+      if (Date.now() - lastSheetAt < 400) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
     if (m.status === 'queued') row.classList.add('queued');
     if (state.selection.has(m.id)) row.classList.add('sel');
     const b = document.createElement('div');
@@ -498,6 +511,10 @@
         });
         img.addEventListener('load', () => {
           if (state.stick) pin(true);
+        });
+        img.addEventListener('error', () => {
+          // 电脑上的原文件被移走/删除时，别留一个破图标
+          if (img.isConnected) img.replaceWith(fileCard(m));
         });
         b.appendChild(img);
       } else if (video && m.status === 'ok') {
@@ -651,6 +668,7 @@
     state.nodes.delete(id);
     state.byId.delete(id);
     state.messages = state.messages.filter((m) => m.id !== id);
+    if (state.selection.delete(id) && state.selecting) refreshSelection();
     if (!state.messages.length && !state.failed.length) {
       renderAll([]);
     }
@@ -983,7 +1001,8 @@
           // 上传成功后继续用服务端 id 跟踪进度
           state.locals.set(m.src, { id: m.id, kind: local.kind });
         }
-        appendMessage(m);
+        // 重连后的历史里可能已经有这条（例如 ack 丢了），不要再画一遍
+        if (!state.byId.has(m.id)) appendMessage(m);
         return;
       }
       if (state.byId.has(m.id)) return;
@@ -995,10 +1014,12 @@
       return;
     }
     if (p.t === 'msg:delete') {
+      cancelUploadFor(p.id);
       removeRow(p.id);
       return;
     }
     if (p.t === 'clear') {
+      cancelAllUploads();
       renderAll([]);
       return;
     }
@@ -1018,6 +1039,23 @@
   }
 
   function reconcileHistory(list) {
+    // 历史里已经有这条文字（上次 ack 丢了），就不要继续显示/重发本地副本
+    if (Array.isArray(list) && list.length) {
+      const done = new Set();
+      for (const m of list) {
+        if (m && m.kind === 'text' && m.status === 'ok' && m.src) done.add(m.src);
+      }
+      let changed = false;
+      for (const cid of [...state.pending.keys()]) {
+        if (!done.has(cid)) continue;
+        const item = state.pending.get(cid);
+        if (item) clearTimeout(item.timer);
+        state.pending.delete(cid);
+        state.locals.delete(cid);
+        changed = true;
+      }
+      if (changed) saveQueue();
+    }
     const loader = chat.querySelector('.loader');
     if (loader) loader.remove();
     renderAll(list);
@@ -1030,6 +1068,7 @@
     state.nodes.delete(id);
     state.byId.delete(id);
     state.messages = state.messages.filter((m) => m.id !== id);
+    if (state.selection.delete(id) && state.selecting) refreshSelection();
   }
 
   function patch(id, changes) {
@@ -1261,6 +1300,7 @@
     trackers.start(cid, file.size);
     pin(true);
 
+    let uploadId = '';
     try {
       const init = await postJSON('/api/upload/init', {
         name: local.name,
@@ -1269,8 +1309,10 @@
         cid,
       });
       const id = init.id;
+      uploadId = id;
       let offset = 0;
       while (offset < file.size) {
+        if (state.cancelUploads.has(cid)) throw new Error('cancelled');
         const end = Math.min(offset + CHUNK, file.size);
         const r = await putChunk(id, file.slice(offset, end), offset, (loaded) =>
           onUploadProgress(cid, offset + loaded, file.size)
@@ -1278,21 +1320,28 @@
         offset = typeof r.offset === 'number' ? r.offset : end;
         onUploadProgress(cid, offset, file.size);
       }
+      if (state.cancelUploads.has(cid)) throw new Error('cancelled');
       await postJSON(`/api/upload/${id}/done`, {});
+      state.cancelUploads.delete(cid);
       trackers.stop(cid);
       buzz(8);
     } catch (err) {
       trackers.stop(cid);
-      try {
-        await fetch(`/api/msg/${cid}`, { method: 'DELETE' });
-      } catch {
-        /* ignore */
+      const cancelled = state.cancelUploads.delete(cid);
+      // 用服务端的上传 id（就是消息 id）清理；cid 是手机端编号，服务端不认识
+      if (uploadId) {
+        try {
+          await fetch(`/api/msg/${uploadId}`, { method: 'DELETE' });
+        } catch {
+          /* ignore */
+        }
       }
       const local = state.locals.get(cid);
       if (local) {
         removeLocalRow(local.id);
         state.locals.delete(cid);
       }
+      if (cancelled) return;
       state.failed.push({
         key: 'f' + Date.now() + Math.random().toString(16).slice(2, 6),
         name: file.name || '文件',
@@ -1497,14 +1546,19 @@
     });
   }
 
-  function cancelLocal(cid) {
+  function cancelLocalSilent(cid) {
     state.pending.delete(cid);
     saveQueue();
     const local = state.locals.get(cid);
     if (local) {
+      if (local.kind === 'upload') state.cancelUploads.add(cid);
       removeLocalRow(local.id);
       state.locals.delete(cid);
     }
+  }
+
+  function cancelLocal(cid) {
+    cancelLocalSilent(cid);
     toast('已取消');
   }
 
@@ -1756,11 +1810,33 @@
     toast('已复制，可以粘贴到其他应用');
   }
 
+  function cancelUploadFor(id) {
+    for (const [cid, local] of state.locals) {
+      if (local.id === id && local.kind === 'upload') state.cancelUploads.add(cid);
+    }
+  }
+
+  function cancelAllUploads() {
+    for (const [cid, local] of state.locals) {
+      if (local.kind === 'upload') state.cancelUploads.add(cid);
+    }
+  }
+
+  /** 以服务端结果为准；连不上时不要把消息从界面上删掉，否则刷新后会复活 */
+  function serverDelete(id) {
+    return fetch(`/api/msg/${id}`, { method: 'DELETE' }).then((r) => {
+      if (!r.ok && r.status !== 404) throw new Error('HTTP ' + r.status);
+    });
+  }
+
   function deleteMessage(id) {
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'delete', id }));
-    else fetch(`/api/msg/${id}`, { method: 'DELETE' }).catch(() => {});
-    removeRow(id);
-    toast('已删除');
+    cancelUploadFor(id);
+    serverDelete(id)
+      .then(() => {
+        removeRow(id);
+        toast('已删除');
+      })
+      .catch(() => toast('删除失败，请检查连接'));
   }
 
   // ---------- 回复 ----------
@@ -1812,13 +1888,24 @@
   function deleteSelection() {
     const ids = [...state.selection];
     if (!ids.length) return;
-    for (const id of ids) {
-      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'delete', id }));
-      else fetch(`/api/msg/${id}`, { method: 'DELETE' }).catch(() => {});
-      removeRow(id);
-    }
     exitSelection();
-    toast(`已删除 ${ids.length} 条`);
+    const locals = ids.filter((id) => id.startsWith('local:'));
+    const remotes = ids.filter((id) => !id.startsWith('local:'));
+    for (const id of locals) cancelLocalSilent(id.slice(6));
+    for (const id of remotes) cancelUploadFor(id);
+    Promise.allSettled(remotes.map((id) => serverDelete(id))).then((results) => {
+      let ok = locals.length;
+      let fail = 0;
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') {
+          ok += 1;
+          removeRow(remotes[i]);
+        } else {
+          fail += 1;
+        }
+      });
+      toast(fail ? `已删除 ${ok} 条，${fail} 条失败` : `已删除 ${ok} 条`);
+    });
   }
 
   chat.addEventListener('click', (e) => {
@@ -2111,7 +2198,8 @@
       }));
       sheet.appendChild(enterRow);
 
-      if (native || navigator.vibrate) {
+      // 原生 App 里震动由「设置 → 通知 → 震动」控制，网页里的开关改不到原生偏好
+      if (!native && navigator.vibrate) {
         const vibRow = document.createElement('div');
         vibRow.className = 'setrow';
         const el2 = document.createElement('span');

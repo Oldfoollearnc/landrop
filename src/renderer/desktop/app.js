@@ -154,13 +154,17 @@ function play(name) {
 
 // ---------- 视图 ----------
 
+function matchQuery(m, q) {
+  return !!q && !!(
+    (m.text && m.text.toLowerCase().includes(q))
+    || (m.name && m.name.toLowerCase().includes(q))
+  );
+}
+
 function currentList() {
   const q = searchQuery.trim().toLowerCase();
   if (!q) return loaded;
-  return loaded.filter((m) => (
-    (m.text && m.text.toLowerCase().includes(q))
-    || (m.name && m.name.toLowerCase().includes(q))
-  ));
+  return loaded.filter((m) => matchQuery(m, q));
 }
 
 function updateChrome() {
@@ -442,7 +446,7 @@ function appendMessage(m) {
     $('jumpPill').hidden = false;
   }
   if (m.from === 'phone') markSeen();
-  else markWaitingDownload(m);
+  else if (!rendering) markWaitingDownload(m);
 }
 
 let seenTimer = null;
@@ -533,6 +537,7 @@ function removeMessage(id) {
   byId.delete(id);
   loaded = loaded.filter((m) => m.id !== id);
   speed.delete(id);
+  if (picked.delete(id) && multiMode) updateMulti();
   if (!loaded.length) {
     chat.innerHTML = '';
     chat.appendChild(chatEmpty(false));
@@ -781,6 +786,10 @@ function saveDraft() {
 function sendText() {
   const v = input.value.trim();
   if (!v) return;
+  if (v.length > 20000) {
+    toast('单条消息太长了');
+    return;
+  }
   api.sendText(v);
   play('send');
   input.value = '';
@@ -985,10 +994,11 @@ $('setNic').addEventListener('change', async (e) => {
 
 $('setFw').addEventListener('click', async () => {
   toast('请在系统弹窗中允许');
-  await api.openFirewall();
-  state.firewall = true;
-  $('setFwState').textContent = '已放通';
-  flashRow($('setFw'));
+  const ok = await api.openFirewall();
+  state.firewall = !!ok;
+  $('setFwState').textContent = ok ? '已放通' : '未放通';
+  if (ok) flashRow($('setFw'));
+  else toast('未放通，手机可能连不上');
 });
 
 $('setReset').addEventListener('click', async () => {
@@ -1054,14 +1064,16 @@ function onDownload(p) {
   }
   const pct = p.total ? Math.min(100, Math.round((p.sent * 100) / p.total)) : 0;
   bar.querySelector('i').style.width = pct + '%';
-  bar.querySelector('span').textContent = p.waiting
-    ? '等待手机下载'
-    : p.done
-      ? '手机已下载'
-      : `手机下载中 ${pct}%`;
+  bar.querySelector('span').textContent = p.aborted
+    ? '手机下载已中断'
+    : p.waiting
+      ? '等待手机下载'
+      : p.done
+        ? '手机已下载'
+        : `手机下载中 ${pct}%`;
   bar.classList.toggle('done', !!p.done);
   bar.classList.toggle('waiting', !!p.waiting);
-  if (p.done) {
+  if (p.done || p.aborted) {
     clearTimeout(dlTimers.get(p.id));
     dlTimers.set(p.id, setTimeout(() => {
       const cur = nodes.get(p.id);
@@ -1082,6 +1094,8 @@ function onPresence(list) {  const had = devices.length;
   devices = Array.isArray(list) ? list : [];
   updateChrome();
   appEl.classList.toggle('offline', devices.length === 0 && loaded.length > 0);
+  // 手机重新连上后，把电脑端已经看到的消息补一次已读回执
+  if (devices.length) markSeen();
 
   if (devices.length > had) {
     const name = devices[0] || '手机';
@@ -1103,21 +1117,28 @@ function onEvent(p) {
   if (!p || !p.t) return;
   switch (p.t) {
     case 'msg': {
+      // 初始化期间排队重放 + 服务端历史可能已经包含同一条，避免重复
+      if (p.msg && byId.has(p.msg.id)) break;
       loaded.push(p.msg);
       if (p.msg.from === 'phone') play('recv');
       if (view !== 'chat') syncView();
+      else if (searchMode && searchQuery.trim() && !matchQuery(p.msg, searchQuery.trim().toLowerCase())) break;
       else appendMessage(p.msg);
       break;
     }
     case 'msg:update':
       patchMessage(p.id, p.patch);
+      // 手机上传的文件只有收完（ok）才应显示已读双勾
+      if (p.patch && p.patch.status === 'ok') markSeen();
       break;
     case 'msg:delete':
       removeMessage(p.id);
       break;
     case 'clear':
       loaded = [];
-      renderAll([]);
+      if (multiMode) exitMulti();
+      if (searchMode) closeSearch();
+      renderAll(currentList());
       syncView();
       break;
     case 'theme':
@@ -1156,6 +1177,14 @@ function onEvent(p) {
 // ---------- 启动 ----------
 
 (async function init() {
+  // 先接住事件：state() 往返期间到达的消息不能丢，等界面初始化完再按顺序重放
+  let booting = true;
+  const queued = [];
+  api.onEvent((p) => {
+    if (booting) queued.push(p);
+    else onEvent(p);
+  });
+
   const s = await api.state();
   state = s;
   theme = s.theme;
@@ -1191,5 +1220,6 @@ function onEvent(p) {
     setTimeout(() => toast('聊天记录无法解密，原文件已保留'), 900);
   }
 
-  api.onEvent(onEvent);
+  booting = false;
+  for (const p of queued.splice(0)) onEvent(p);
 })();

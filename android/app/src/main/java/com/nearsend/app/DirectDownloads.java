@@ -61,6 +61,11 @@ public final class DirectDownloads {
 
     /** 返回给网页的 token（就是消息 id），后续用它查进度 */
     public static String start(Context ctx, Device d, String msgId, String name) {
+        Task running = MAP.get(msgId);
+        if (running != null && running.state == STATE_RUNNING) {
+            // 连点两下「保存」不要开两个线程写两份同样的文件
+            return msgId;
+        }
         final Context app = ctx.getApplicationContext();
         final Task t = new Task();
         t.id = msgId;
@@ -205,19 +210,17 @@ public final class DirectDownloads {
             t.state = STATE_FAILED;
             t.error = e.getMessage() == null ? "下载失败" : e.getMessage();
             android.util.Log.e("NearSend", "download failed: " + e);
-            if (t.cancel) {
-                // 取消时把半截文件删掉
-                try {
-                    if (target != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        ctx.getContentResolver().delete(target, null, null);
-                    } else if (fileTarget != null) {
-                        fileTarget.delete();
-                    }
-                } catch (Exception ignored) {
+            // 不论取消还是网络中断，都删掉半截文件；否则 MediaStore 里会留下
+            // 永远处于 IS_PENDING=1 的隐藏条目，反复失败会一直占空间
+            try {
+                if (target != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ctx.getContentResolver().delete(target, null, null);
+                } else if (fileTarget != null) {
+                    fileTarget.delete();
                 }
-            } else {
-                notifyFailed(ctx, t);
+            } catch (Exception ignored) {
             }
+            if (!t.cancel) notifyFailed(ctx, t);
         } finally {
             try {
                 if (in != null) in.close();

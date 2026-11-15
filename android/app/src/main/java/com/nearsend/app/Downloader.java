@@ -274,25 +274,42 @@ public final class Downloader {
     private static void saveTo(Context ctx, Device d, String id, String name,
                                Uri collection, String relativeBase) throws Exception {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ContentValues v = new ContentValues();
-            v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
-            v.put(MediaStore.MediaColumns.MIME_TYPE, guessMime(name));
-            v.put(MediaStore.MediaColumns.RELATIVE_PATH,
-                    relativeBase + "/" + FOLDER);
-            v.put(MediaStore.MediaColumns.IS_PENDING, 1);
-            Uri target = ctx.getContentResolver().insert(collection, v);
-            if (target == null) throw new IOException("no target");
-            OutputStream os = ctx.getContentResolver().openOutputStream(target);
-            if (os == null) throw new IOException("no stream");
-            copyFromServer(d, id, os);
-            ContentValues done = new ContentValues();
-            done.put(MediaStore.MediaColumns.IS_PENDING, 0);
-            ctx.getContentResolver().update(target, done, null, null);
+            Uri target = null;
+            try {
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                v.put(MediaStore.MediaColumns.MIME_TYPE, guessMime(name));
+                v.put(MediaStore.MediaColumns.RELATIVE_PATH,
+                        relativeBase + "/" + FOLDER);
+                v.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                target = ctx.getContentResolver().insert(collection, v);
+                if (target == null) throw new IOException("no target");
+                OutputStream os = ctx.getContentResolver().openOutputStream(target);
+                if (os == null) throw new IOException("no stream");
+                copyFromServer(d, id, os);
+                ContentValues done = new ContentValues();
+                done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                ctx.getContentResolver().update(target, done, null, null);
+            } catch (Exception e) {
+                // 失败时删掉 pending 条目，别在相册/下载里留下看不见的半截文件
+                if (target != null) {
+                    try {
+                        ctx.getContentResolver().delete(target, null, null);
+                    } catch (Exception ignored) {
+                    }
+                }
+                throw e;
+            }
         } else {
             File dir = new File(Environment.getExternalStoragePublicDirectory(relativeBase), FOLDER);
             if (!dir.exists() && !dir.mkdirs()) throw new IOException("no dir");
             File out = uniqueFile(dir, name);
-            copyFromServer(d, id, new FileOutputStream(out));
+            try {
+                copyFromServer(d, id, new FileOutputStream(out));
+            } catch (Exception e) {
+                out.delete();
+                throw e;
+            }
         }
     }
 

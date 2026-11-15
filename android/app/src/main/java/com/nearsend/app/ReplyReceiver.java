@@ -45,6 +45,11 @@ public class ReplyReceiver extends BroadcastReceiver {
         }, new Bg.Result<String>() {
             @Override
             public void on(String result) {
+                // 发送失败时保留通知并提示，不要静默清掉用户刚写的回复
+                if (result == null || result.isEmpty()) {
+                    Ui.toast(App.I, App.I.getString(R.string.err_unreachable));
+                    return;
+                }
                 try {
                     NotificationManager nm = (NotificationManager)
                             App.I.getSystemService(Context.NOTIFICATION_SERVICE);

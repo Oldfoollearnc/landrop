@@ -2,16 +2,12 @@ package com.nearsend.app;
 
 import android.os.SystemClock;
 
-import org.json.JSONObject;
-
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URL;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 /** 与电脑端 HTTP / WebSocket 打交道的全部网络逻辑。 */
 public final class ApiClient {
@@ -131,6 +127,11 @@ public final class ApiClient {
                 return out;
             }
             out.state = Device.STATE_ONLINE;
+            // 电脑名就在 /api/history 里。以前为了拿它额外开一条 WS，
+            // 会让电脑端把「健康检查」当成设备上线/离线，误报连接提示。
+            java.util.regex.Matcher hm = java.util.regex.Pattern
+                    .compile("\"host\"\\s*:\\s*\"([^\"]*)\"").matcher(body);
+            if (hm.find()) out.hostname = hm.group(1);
         } catch (Exception e) {
             out.state = Device.STATE_OFFLINE;
             out.error = e.getMessage() == null ? "无法连接" : e.getMessage();
@@ -138,44 +139,7 @@ public final class ApiClient {
         } finally {
             if (c != null) c.disconnect();
         }
-        out.hostname = hostname(d, Math.min(timeoutMs, 2200));
         return out;
-    }
-
-    /** 连一次 WS 只为拿 init.host（电脑名）。必须在后台线程调用。 */
-    public static String hostname(Device d, int timeoutMs) {
-        final CountDownLatch latch = new CountDownLatch(1);
-        final String[] name = {null};
-        final WsClient ws = new WsClient();
-        ws.connect(d.ip, d.port, "/ws?t=" + d.token, timeoutMs, new WsClient.Listener() {
-            @Override
-            public void onOpen() {
-            }
-
-            @Override
-            public void onMessage(String text) {
-                try {
-                    JSONObject o = new JSONObject(text);
-                    if ("init".equals(o.optString("t"))) {
-                        String h = o.optString("host", "");
-                        if (!h.isEmpty()) name[0] = h;
-                        latch.countDown();
-                    }
-                } catch (Exception ignored) {
-                }
-            }
-
-            @Override
-            public void onClosed(String reason) {
-                latch.countDown();
-            }
-        });
-        try {
-            latch.await(timeoutMs + 600L, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException ignored) {
-        }
-        ws.close();
-        return name[0];
     }
 
     /** 解析扫码 / 粘贴得到的连接地址。 */
