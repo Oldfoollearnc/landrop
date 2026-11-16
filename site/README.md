@@ -1,6 +1,6 @@
 # 近传 · 远程工位 — 网站介绍页
 
-“近传 · 远程工位 V1.0.0”内部内测版的静态介绍页与发布说明页。纯 HTML + CSS，无外部字体、无 CDN、无 JavaScript 依赖。
+“近传 · 远程工位 3.0.0”内部内测版的静态介绍页与发布说明页。纯 HTML + CSS，无外部字体、无 CDN、无 JavaScript 依赖。
 
 ## 打开方式
 
@@ -20,7 +20,7 @@ python -m http.server 8080
 ```text
 site/
 ├── index.html      产品介绍页 / 落地页
-├── release.html    发布说明页（V1.0.0 内测版）
+├── release.html    发布说明页（3.0.0 内测版）
 ├── styles.css      两页共用样式
 ├── README.md       本文件
 └── img/
