@@ -137,6 +137,7 @@ class RemoteManager extends EventEmitter {
             const peer = {
               id: msg.id, name: safeName(msg.name, msg.id), ip: rinfo.address, port: Number(msg.port) || 0,
               os: msg.os || 'Windows', version: msg.version || '', online: true, lastSeen: now(), self: false,
+              displayCount: Math.max(1, Math.min(2, Number(msg.displayCount) || 1)),
             };
             if (!peer.port) return;
             this.peers.set(peer.id, peer);
@@ -199,6 +200,7 @@ class RemoteManager extends EventEmitter {
     this.peers.set(this.deviceId, {
       id: this.deviceId, name: `${this.deviceName}（本机）`, ip: '127.0.0.1', port: this.wsPort,
       os: `Windows · ${os.release()}`, version: this.version, online: true, lastSeen: now(), self: true,
+      displayCount: screen.getAllDisplays().length,
     });
   }
 
@@ -206,7 +208,7 @@ class RemoteManager extends EventEmitter {
     if (!this.udp || !this.agentEnabled) return;
     const msg = Buffer.from(JSON.stringify({
       ns: APP_TAG, t: 'announce', id: this.deviceId, name: this.deviceName, port: this.wsPort,
-      os: `Windows · ${os.release()}`, version: this.version, ts: now(),
+      os: `Windows · ${os.release()}`, version: this.version, displayCount: screen.getAllDisplays().length, ts: now(),
     }));
     try {
       if (to) this.udp.send(msg, UDP_PORT, to);
@@ -223,7 +225,7 @@ class RemoteManager extends EventEmitter {
   peerList() {
     return [...this.peers.values()].map((p) => ({
       id: p.id, name: p.name, ip: p.ip, port: p.port, os: p.os, version: p.version,
-      online: p.online, self: !!p.self, lastSeen: p.lastSeen,
+      online: p.online, self: !!p.self, lastSeen: p.lastSeen, displayCount: p.displayCount || 1,
     }));
   }
 
@@ -240,6 +242,9 @@ class RemoteManager extends EventEmitter {
       device: {
         id: this.deviceId, name: this.deviceName, host: os.hostname(),
         os: `Windows · ${os.release()}`, version: this.version, ips: ipv4List(),
+        displays: screen.getAllDisplays().map((d, i) => ({
+          index: i, label: `屏幕 ${i + 1}`, res: `${d.size.width}×${d.size.height}`, primary: d.id === screen.getPrimaryDisplay().id,
+        })),
       },
       agentEnabled: this.agentEnabled,
       code: this.code,

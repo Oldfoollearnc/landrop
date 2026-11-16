@@ -227,6 +227,7 @@ const state = {
   pairResolve: null,
   windowMaximized: false,
   incomingUnread: 0,
+  uiSettings: (() => { try { return JSON.parse(localStorage.getItem('ns-ui-settings') || '{}'); } catch { return {}; } })(),
 };
 
 function deviceById(id) { return DEVICES.find((d) => d.id === id); }
@@ -250,10 +251,9 @@ function peerToDevice(peer) {
     expiryLabel: '长期',
     expirySeconds: null,
     permissions: { view: true, control: true, unattended: false, clipboard: true, file: true, manage: false, audit: true, record: false },
-    displays: [
-      { id: 1, label: '屏幕 1', res: '1920×1080', dpi: '100%', primary: true },
-      { id: 2, label: '屏幕 2', res: '1920×1080', dpi: '100%', primary: false },
-    ],
+    displays: Array.from({ length: Math.max(1, Math.min(2, peer.displayCount || 1)) }, (_, i) => ({
+      id: i + 1, label: `屏幕 ${i + 1}`, res: '1920×1080', dpi: '100%', primary: i === 0,
+    })),
     encoder: 'JPEG · LAN',
     wifi: 'LAN',
     version: peer.version || '1.0.0',
@@ -1177,7 +1177,8 @@ function settingRow(label, desc, control) {
   return `<div class="settings-row"><div class="settings-label"><b>${label}</b>${desc ? `<span>${desc}</span>` : ''}</div><div class="settings-value">${control}</div></div>`;
 }
 function switchHtml(on, label, action = 'setting-toggle', extra = '') {
-  return `<button class="switch ${on ? 'on' : ''}" role="switch" aria-checked="${on}" aria-label="${esc(label)}" data-action="${action}" ${extra}></button>`;
+  const value = Object.prototype.hasOwnProperty.call(state.uiSettings, label) ? !!state.uiSettings[label] : !!on;
+  return `<button class="switch ${value ? 'on' : ''}" role="switch" aria-checked="${value}" aria-label="${esc(label)}" data-action="${action}" ${extra}></button>`;
 }
 function settingsContent(section) {
   if (section === 'connection') {
@@ -2568,7 +2569,14 @@ function handleMainClick(e) {
     else if (a === 'settings-section') { state.settingsSection = act.dataset.value; renderSettings(); }
     else if (a === 'set-theme') { state.theme = act.dataset.value; localStorage.setItem('rd-theme', state.theme); render(); window.workspace.theme(document.documentElement.dataset.theme); }
     else if (a === 'set-density') { state.density = act.dataset.value; localStorage.setItem('rd-density', state.density); render(); }
-    else if (a === 'setting-toggle') { const on = act.classList.toggle('on'); act.setAttribute('aria-checked', String(on)); toast(on ? '已开启' : '已关闭', 'success'); }
+    else if (a === 'setting-toggle') {
+      const on = act.classList.toggle('on');
+      act.setAttribute('aria-checked', String(on));
+      const label = act.getAttribute('aria-label') || '';
+      state.uiSettings[label] = on;
+      try { localStorage.setItem('ns-ui-settings', JSON.stringify(state.uiSettings)); } catch {}
+      toast(on ? '已开启' : '已关闭', 'success');
+    }
     else if (a === 'session-detail') toast('会话详情（原型）', 'success');
     else if (a === 'export-sessions') toast('会话记录已导出 CSV（原型）', 'success');
     else if (a === 'open-agent') toggleAgent(true);
