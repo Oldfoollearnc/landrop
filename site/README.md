@@ -25,7 +25,7 @@ site/
 ├── README.md       本文件
 └── img/
     ├── 01-devices.png    设备控制台（首屏）
-    ├── 04-unlock.png     锁屏解锁（安全与边界）
+    ├── 04-unlock.png     锁屏说明（安全边界，内测暂不支持）
     ├── 05-session.png    远程会话（真实键鼠）
     ├── 06-agent.png      本机被控（授权）
     ├── 11-grants.png     授权列表（授权与审计）
