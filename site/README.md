@@ -42,7 +42,7 @@ site/
 ## 内容维护
 
 - 版本号、发布日期出现在 `index.html` 的下载区，以及 `release.html` 的页头与侧栏；发版时需要同步修改。
-- 下载按钮目前为占位链接 `href="#"`，并注明“内测包由 IT 分发”。拿到正式下载地址后，替换两页中对应按钮的 `href` 即可。
+- 下载按钮已指向 GitHub Release `v3.0.0` 的 Setup 安装包；发布页与 `SHA256SUMS.txt` 同版本。内测包也可由内部 IT 分发。
 - 顶栏锚点：`#features`、`#security`、`#chat`、`#deploy`、`#download`；发布页使用 `index.html#…` 跨页跳转。
 - 如调整导航项，请同步修改 `index.html`、`release.html` 与两个页脚中的链接。
 
