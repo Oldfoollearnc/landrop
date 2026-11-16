@@ -488,7 +488,7 @@ class RemoteManager extends EventEmitter {
         return;
       }
       if (msg.t === 'stop') { this.stopActive('remote-stop'); return; }
-      if (msg.t === 'ping') this.send(ws, { t: 'pong', ts: now() });
+      if (msg.t === 'ping') this.send(ws, { t: 'pong', ts: msg.ts || now() });
     });
     ws.on('close', () => {
       this.connections.delete(conn);
@@ -819,6 +819,7 @@ class RemoteManager extends EventEmitter {
           this.client.device = msg.device;
           this.client.grant = msg.grant || null;
           this.client.peerName = peer.name;
+          this.startPing(ws);
           this.send(ws, { t: 'start', display: 0, quality: 'auto' });
           this.emit('session', { state: 'active', peer, device: msg.device });
           resolve(this.state());
@@ -838,8 +839,14 @@ class RemoteManager extends EventEmitter {
         if (msg.t === 'clipboard') { this.emit('clipboard', msg); return; }
         if (msg.t === 'chat') { this.emit('chat', { ...msg, direction: 'in', from: peer.name }); return; }
         if (msg.t === 'chat:ack') return;
+        if (msg.t === 'pong') {
+          const sent = Number(msg.ts) || 0;
+          if (sent) this.emit('stats', { rtt: Math.max(0, now() - sent) });
+          return;
+        }
         if (msg.t === 'error') { fail(new Error(msg.message || msg.code || '远程错误')); try { ws.close(); } catch {} return; }
         if (msg.t === 'ended') {
+          this.stopPing();
           this.emit('session', { state: 'ended', reason: msg.reason || 'ended', peer });
           this.client = null;
         }
@@ -849,6 +856,7 @@ class RemoteManager extends EventEmitter {
       }, 12000);
       ws.on('close', () => {
         clearTimeout(timer);
+        this.stopPing();
         if (!settled) fail(new Error('连接已断开'));
         if (this.client && this.client.ws === ws) {
           this.client = null;
@@ -862,6 +870,7 @@ class RemoteManager extends EventEmitter {
   disconnect() {
     const c = this.client;
     if (!c) return;
+    this.stopPing();
     try { this.send(c.ws, { t: 'stop' }); } catch {}
     try {
       if (c.ws.readyState === WebSocket.CONNECTING) c.ws.terminate();
@@ -991,6 +1000,18 @@ class RemoteManager extends EventEmitter {
     if (!this.client || this.client.state !== 'active') return;
     this.send(this.client.ws, { t: 'recording', on: !!on });
   }
+  startPing(ws) {
+    this.stopPing();
+    this.pingTimer = setInterval(() => {
+      if (this.client && this.client.ws === ws && ws.readyState === WebSocket.OPEN) {
+        this.send(ws, { t: 'ping', ts: now() });
+      }
+    }, 2000);
+  }
+  stopPing() {
+    clearInterval(this.pingTimer);
+    this.pingTimer = null;
+  }
   sendChatToActive(text) {
     const value = String(text || '').trim().slice(0, 4000);
     if (!value || !this.lastAgentWs || this.lastAgentWs.readyState !== WebSocket.OPEN) return null;
@@ -1045,6 +1066,7 @@ class RemoteManager extends EventEmitter {
     clearInterval(this.clipboardTimer);
     clearTimeout(this.grantTimer);
     this.stopCaptureHelper();
+    this.stopPing();
     clearTimeout(this.knownSaveTimer);
     clearTimeout(this.auditTimer);
     this.knownSaveTimer = null;
