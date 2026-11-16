@@ -836,6 +836,16 @@ function handleWorkspaceEvent(payload) {
     }
     return;
   }
+  if (payload.t === 'stats') {
+    if (state.session?.real) {
+      state.session.rtt = Number(payload.stats?.rtt) || 0;
+      const rttEl = document.getElementById('hudRtt');
+      if (rttEl) rttEl.textContent = `${state.session.rtt} ms`;
+      const drawerRtt = document.querySelector('[data-session-rtt]');
+      if (drawerRtt) drawerRtt.textContent = `${state.session.rtt} ms`;
+    }
+    return;
+  }
   if (payload.t === 'frame') {
     if (state.session?.real) {
       drawRemoteFrame(payload.frame);
@@ -1873,6 +1883,9 @@ async function openRealSession(device) {
     clipboard: !!device.permissions.clipboard,
     files: [],
     recording: false,
+    fps: 0,
+    frameCount: 0,
+    rtt: null,
     banner: null,
     reconnecting: false,
     expired: false,
@@ -1885,7 +1898,11 @@ async function openRealSession(device) {
   state.sessionTimer = setInterval(() => {
     if (!state.session) return;
     state.session.duration += 1;
+    state.session.fps = state.session.frameCount || 0;
+    state.session.frameCount = 0;
     document.querySelectorAll('[data-session-duration]').forEach((el) => { el.textContent = formatDuration(state.session.duration); });
+    const fpsEl = document.getElementById('hudFps');
+    if (fpsEl) fpsEl.textContent = `${state.session.fps} fps`;
   }, 1000);
   renderSession();
   toast('正在建立加密直连…', 'info');
@@ -1986,7 +2003,7 @@ function renderSession() {
         </div>
         <div class="session-hud">
           ${s.real
-            ? `<span class="hud-item"><span class="hud-dot"></span>LAN</span><span class="hud-item" id="hudCapture">${s.capture === 'gdi' ? 'GDI · JPEG' : 'JPEG'}</span><span class="hud-item">${esc(s.qualityLabel)}</span>`
+            ? `<span class="hud-item"><span class="hud-dot"></span>LAN</span><span class="hud-item" id="hudRtt">${s.rtt === null || s.rtt === undefined ? '— ms' : `${s.rtt} ms`}</span><span class="hud-item" id="hudFps">${s.fps ? `${s.fps} fps` : '— fps'}</span><span class="hud-item" id="hudCapture">${s.capture === 'gdi' ? 'GDI · JPEG' : 'JPEG'}</span><span class="hud-item">${esc(s.qualityLabel)}</span>`
             : `<span class="hud-item ${s.banner?.type === 'warn' ? 'warn' : ''}"><span class="hud-dot" style="${s.banner?.type === 'warn' ? 'background:#fbbf24' : ''}"></span>18 ms</span><span class="hud-item">60 fps</span><span class="hud-item">7.2 Mbps</span><span class="hud-item">${esc(s.qualityLabel)}</span>`}
         </div>
         <span class="spacer"></span>
@@ -2086,7 +2103,7 @@ function sessionDrawerHtml(device, s) {
   const startLabel = new Date(s.startAt || Date.now()).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
   return `<aside class="session-drawer"><div class="session-drawer-head"><b>会话信息</b><button class="icon-btn" data-session-action="drawer-close" aria-label="关闭">${icon('x', 15)}</button></div><div class="session-drawer-body">
     <div class="card"><div class="card-head"><b>连接</b><span class="tag ok">${s.real ? '局域网直连' : 'P2P 直连'}</span></div><dl class="kv"><dt>设备</dt><dd>${esc(device.name)}</dd><dt>主机</dt><dd class="mono">${esc(device.host)}</dd><dt>控制端</dt><dd>${s.real ? '本机' : '李伟的笔记本'}</dd><dt>开始</dt><dd>今天 ${esc(startLabel)}</dd><dt>时长</dt><dd data-session-duration>${formatDuration(s.duration)}</dd></dl></div>
-    <div class="card" style="margin-top:10px"><div class="card-head"><b>画质</b><span class="tag blue">${esc(s.qualityLabel)}</span></div><dl class="kv"><dt>请求</dt><dd>${esc(s.qualityLabel)}</dd><dt>实际</dt><dd>${s.real ? (s.capture === 'gdi' ? 'GDI · JPEG 帧' : 'WS · JPEG 帧') : '1080p60 · 7.2 Mbps'}</dd><dt>显示器</dt><dd>屏幕 ${s.display} · ${esc((device.displays.find((d) => d.id === s.display) || device.displays[0]).res)}</dd><dt>延迟</dt><dd class="mono">${s.real ? '局域网' : '18 ms · 丢包 0.2%'}</dd><dt>编码</dt><dd>${s.real ? (s.capture === 'gdi' ? 'GDI → JPEG' : 'JPEG') : 'H.264 · 4:2:0'}</dd></dl></div>
+    <div class="card" style="margin-top:10px"><div class="card-head"><b>画质</b><span class="tag blue">${esc(s.qualityLabel)}</span></div><dl class="kv"><dt>请求</dt><dd>${esc(s.qualityLabel)}</dd><dt>实际</dt><dd>${s.real ? (s.capture === 'gdi' ? 'GDI · JPEG 帧' : 'WS · JPEG 帧') : '1080p60 · 7.2 Mbps'}</dd><dt>显示器</dt><dd>屏幕 ${s.display} · ${esc((device.displays.find((d) => d.id === s.display) || device.displays[0]).res)}</dd><dt>延迟</dt><dd class="mono" data-session-rtt>${s.real ? (s.rtt ? `${s.rtt} ms` : '测量中') : '18 ms · 丢包 0.2%'}</dd><dt>编码</dt><dd>${s.real ? (s.capture === 'gdi' ? 'GDI → JPEG' : 'JPEG') : 'H.264 · 4:2:0'}</dd></dl></div>
     <div class="card" style="margin-top:10px"><div class="card-head"><b>权限</b></div><div class="permission-summary">${PERMISSIONS.map((p) => `<span class="perm-chip ${device.permissions[p.key] ? '' : 'off'}">${icon(device.permissions[p.key] ? 'check' : 'x', 11)}${p.name}</span>`).join('')}</div><div class="card-note">${s.grant?.role === 'admin' ? '管理员临时支持：8 小时后到期；无人值守/剪贴板/文件/录制默认关闭。' : '本人设备：长期授权；录制默认关闭。'}</div></div>
     <div class="card" style="margin-top:10px"><div class="card-head"><b>安全</b></div><dl class="kv"><dt>传输</dt><dd>${s.real ? '局域网 WS · 无云端' : 'TLS 1.3 / DTLS-SRTP'}</dd><dt>审计</dt><dd>本机 + 设备</dd><dt>录制</dt><dd>${s.recording ? '录制中' : '关闭'}</dd></dl><div class="card-note">会话结束会释放按键；不保存 Windows 密码。锁屏/UAC 安全桌面需原生服务。</div></div>
     <button class="btn btn-sm" style="margin-top:10px" data-session-action="copy-diag">${icon('copy', 13)} 复制诊断信息</button>
@@ -2609,6 +2626,7 @@ function drawRemoteFrame(frame) {
   if (!frame || !frame.data) return;
   state.lastFrame = frame;
   if (state.session && frame.capture) state.session.capture = frame.capture;
+  if (state.session) state.session.frameCount = (state.session.frameCount || 0) + 1;
   const hudCapture = document.getElementById('hudCapture');
   if (hudCapture && frame.capture === 'gdi') hudCapture.textContent = 'GDI · JPEG';
   const canvas = document.getElementById('remoteCanvas');
