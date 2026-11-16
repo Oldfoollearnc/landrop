@@ -84,6 +84,9 @@
 - [x] 绘制远端鼠标指针；多屏按 display_id/索引切换
 - [x] 采集 helper 随包 asarUnpack；桌面采集作为回退
 - [x] 质量/屏幕切换会重启采集 helper
+- [x] 高 DPI 输入映射：`dipToScreenPoint` 转物理像素
+- [x] 手动 `IP:端口` 直连（广播被禁用时）+ 手动设备持久化
+- [x] 架构/端口/安全边界文档 `docs/REMOTE-V1-ARCHITECTURE.md`
 - [ ] 最终重打包 + Release 资产覆盖 + 文档/远端同步
 - [ ] 后续：安全桌面、WebRTC/2K60、完整远程文件浏览器、录制保留策略
 
