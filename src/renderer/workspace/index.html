@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light" data-density="standard">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>近传 · 远程工位</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app-shell">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="12" rx="2.2"/>
+          <path d="M8 20h8M12 16v4"/>
+          <path d="M7.5 10.5h3M13.5 10.5h3"/>
+        </svg>
+      </span>
+      <span class="brand-text">近传 <b>·</b> 远程工位</span>
+      <span class="proto-badge">3.0</span>
+    </div>
+
+    <button class="global-search" id="globalSearch" type="button" aria-label="搜索设备或命令">
+      <span class="gs-icon" aria-hidden="true"></span>
+      <span class="gs-text">搜索设备、员工、资产编号，或输入命令</span>
+      <kbd>Ctrl K</kbd>
+    </button>
+
+    <div class="top-actions">
+      <span class="net-status" title="本机在线 · 局域网">
+        <i class="status-dot online"></i>
+        <span>本机在线</span>
+        <span class="net-sep">·</span>
+        <span class="muted">LAN</span>
+      </span>
+      <button class="btn btn-primary" id="btnAddDevice" type="button">
+        <span class="btn-plus" aria-hidden="true">+</span> 添加设备
+      </button>
+      <button class="icon-btn" id="btnAgentPreview" type="button" title="本机被控" aria-label="本机被控"></button>
+      <button class="icon-btn" id="btnTheme" type="button" title="切换主题" aria-label="切换主题"></button>
+      <div class="window-controls" aria-label="窗口控制">
+        <button class="window-btn" id="winMin" type="button" title="最小化" aria-label="最小化"><span data-icon="minus"></span></button>
+        <button class="window-btn" id="winMax" type="button" title="最大化" aria-label="最大化"><span data-icon="square"></span></button>
+        <button class="window-btn danger" id="winClose" type="button" title="关闭到托盘" aria-label="关闭到托盘"><span data-icon="x"></span></button>
+      </div>
+    </div>
+  </header>
+
+  <div class="app-body">
+    <nav class="nav-rail" id="navRail" aria-label="主导航">
+      <div class="nav-main">
+        <button class="nav-item active" data-view="devices" type="button">
+          <span class="nav-ico" data-icon="monitor"></span>
+          <span class="nav-label">设备</span>
+          <span class="nav-badge warn">3</span>
+        </button>
+        <button class="nav-item" data-view="sessions" type="button">
+          <span class="nav-ico" data-icon="play"></span>
+          <span class="nav-label">会话</span>
+        </button>
+        <button class="nav-item" data-view="messages" type="button">
+          <span class="nav-ico" data-icon="chat"></span>
+          <span class="nav-label">消息</span>
+          <span class="nav-badge" id="navUnread" hidden></span>
+        </button>
+        <button class="nav-item" data-view="grants" type="button">
+          <span class="nav-ico" data-icon="shield"></span>
+          <span class="nav-label">授权</span>
+        </button>
+        <button class="nav-item" data-view="audit" type="button">
+          <span class="nav-ico" data-icon="list"></span>
+          <span class="nav-label">审计</span>
+        </button>
+        <button class="nav-item" data-view="diagnostics" type="button">
+          <span class="nav-ico" data-icon="activity"></span>
+          <span class="nav-label">诊断</span>
+        </button>
+        <button class="nav-item" data-view="settings" type="button">
+          <span class="nav-ico" data-icon="settings"></span>
+          <span class="nav-label">设置</span>
+        </button>
+      </div>
+      <div class="nav-bottom">
+        <div class="local-identity">
+          <span class="local-avatar">本</span>
+          <div class="local-meta">
+            <b>本机控制端</b>
+            <span>Windows · 局域网</span>
+          </div>
+        </div>
+        <button class="lock-btn" id="btnLock" type="button">
+          <span data-icon="lock"></span>
+          <span>锁定控制台</span>
+          <kbd>Ctrl Shift L</kbd>
+        </button>
+      </div>
+    </nav>
+
+    <main class="main" id="main" tabindex="-1"></main>
+  </div>
+</div>
+
+<div id="toastRoot" class="toast-root" aria-live="polite" aria-atomic="true"></div>
+<div id="modalRoot"></div>
+<div id="drawerRoot"></div>
+<div id="commandRoot"></div>
+<div id="sessionRoot"></div>
+<div id="agentRoot"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

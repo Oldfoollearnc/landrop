@@ -2,6 +2,7 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, screen, clipboard, nativeImage, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const QRCode = require('qrcode');
@@ -14,9 +15,11 @@ const { Uploads } = require('./uploads');
 const { LanServer, MIME } = require('./server');
 const { Room } = require('./room');
 const autostart = require('./autostart');
+const { RemoteManager } = require('./remote');
 
 // 提示音要在窗口从未被点击时也能出声
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+if (process.env.NEARSEND_DEBUG) app.commandLine.appendSwitch('remote-debugging-port', '9222');
 
 const COMPACT_W = 380;
 const COMPACT_H = 540;
@@ -30,6 +33,10 @@ const BG_DARK = '#0a0a0b';
 const BG_LIGHT = '#ffffff';
 
 let win = null;
+let workspaceWin = null;
+let remote = null;
+let chatHidden = true;
+let workspaceTheme = 'light';
 let tray = null;
 let server = null;
 let store = null;
@@ -101,6 +108,12 @@ function send(channel, payload) {
   }
 }
 
+function sendWorkspace(channel, payload) {
+  if (workspaceWin && !workspaceWin.isDestroyed() && workspaceWin.webContents && !workspaceWin.webContents.isDestroyed()) {
+    workspaceWin.webContents.send(channel, payload);
+  }
+}
+
 function windowBg() {
   return config.get('theme') === 'light' ? BG_LIGHT : BG_DARK;
 }
@@ -128,6 +141,7 @@ const core = {
     const msg = store.add(input);
     if (server) server.broadcast({ t: 'msg', msg });
     send('ev', { t: 'msg', msg });
+    sendWorkspace('workspace:event', { t: 'chat-summary', chat: chatSummaryPayload() });
     // 上传中的文件只通知一次，等收完（status 变 ok）再提醒，避免传一半就报「收到」
     if (input.from === 'phone' && input.kind !== 'system' && input.status !== 'uploading'
       && win && (!win.isVisible() || !win.isFocused())) {
@@ -247,7 +261,7 @@ function createWindow() {
   win.loadFile(path.join(__dirname, '..', 'renderer', 'desktop', 'index.html'));
 
   win.once('ready-to-show', () => {
-    if (!hiddenStart) showWindow();
+    if (!hiddenStart && !chatHidden) showWindow();
   });
 
   win.on('close', (e) => {
@@ -325,6 +339,82 @@ function setMode(full) {
   refreshTrayMenu();
 }
 
+// ---------- 统一工作台 ----------
+
+function workspaceBounds() {
+  const wa = displayForCursor().workArea;
+  const width = Math.min(1360, wa.width - 32);
+  const height = Math.min(860, wa.height - 32);
+  return { width, height, x: wa.x + Math.round((wa.width - width) / 2), y: wa.y + Math.round((wa.height - height) / 2) };
+}
+
+function createWorkspaceWindow() {
+  workspaceWin = new BrowserWindow({
+    ...workspaceBounds(),
+    frame: false,
+    minWidth: 1024,
+    minHeight: 640,
+    backgroundColor: '#f5f7fa',
+    show: false,
+    title: '近传 · 远程工位',
+    icon: asset('icon.ico'),
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'workspace.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      spellcheck: false,
+      backgroundThrottling: false,
+    },
+  });
+  workspaceWin.setMenu(null);
+  workspaceWin.loadFile(path.join(__dirname, '..', 'renderer', 'workspace', 'index.html'), {
+    query: process.env.NEARSEND_PANEL ? { panel: process.env.NEARSEND_PANEL } : {},
+  });
+  workspaceWin.once('ready-to-show', () => {
+    if (!hiddenStart) workspaceWin.show();
+  });
+  workspaceWin.on('maximize', () => sendWorkspace('workspace:event', { t: 'window', maximized: true }));
+  workspaceWin.on('unmaximize', () => sendWorkspace('workspace:event', { t: 'window', maximized: false }));
+  workspaceWin.on('close', (e) => {
+    if (!quitting) {
+      e.preventDefault();
+      workspaceWin.hide();
+    }
+  });
+  workspaceWin.on('closed', () => { workspaceWin = null; });
+}
+
+function showWorkspace() {
+  if (!workspaceWin || workspaceWin.isDestroyed()) createWorkspaceWindow();
+  if (!workspaceWin) return;
+  if (!workspaceWin.isVisible()) workspaceWin.show();
+  if (workspaceWin.isMinimized()) workspaceWin.restore();
+  workspaceWin.focus();
+}
+function hideWorkspace() {
+  if (workspaceWin && !workspaceWin.isDestroyed()) workspaceWin.hide();
+}
+function toggleWorkspace() {
+  if (workspaceWin && workspaceWin.isVisible() && !workspaceWin.isMinimized()) hideWorkspace();
+  else showWorkspace();
+}
+
+function showChat() {
+  if (!win || win.isDestroyed()) createWindow();
+  chatHidden = false;
+  if (!win) return;
+  if (workspaceTheme) core.setTheme(workspaceTheme);
+  if (!isFull) setMode(true);
+  showWindow();
+  win.focus();
+  if (win && !win.isDestroyed()) {
+    win.webContents.executeJavaScript(
+      `document.documentElement.dataset.theme=${JSON.stringify(workspaceTheme)};`
+    ).catch(() => {});
+  }
+}
+
 // ---------- 托盘 ----------
 
 function trayTooltip() {
@@ -341,6 +431,7 @@ function setUnread(n) {
     tray.setToolTip(trayTooltip());
   }
   send('ev', { t: 'unread', n: unread });
+  sendWorkspace('workspace:event', { t: 'unread', n: unread });
 }
 
 function notify(msg) {
@@ -367,13 +458,14 @@ function refreshTrayMenu() {
   if (!tray) return;
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: isFull ? '还原小窗' : '最大化', click: () => setMode(!isFull) },
+      { label: '打开控制台', click: showWorkspace },
+      { label: '打开团队群聊', click: showChat },
+      { type: 'separator' },
       {
         label: '设置',
         click: () => {
-          showWindow();
-          if (!isFull) setMode(true);
-          send('ev', { t: 'navigate', view: 'settings' });
+          showWorkspace();
+          sendWorkspace('workspace:event', { t: 'navigate', view: 'settings' });
         },
       },
       { type: 'separator' },
@@ -393,9 +485,9 @@ function createTray() {
   trayUnreadImg = nativeImage.createFromPath(asset('tray-unread.ico'));
   tray = new Tray(trayNormal);
   tray.setToolTip(trayTooltip());
-  tray.on('click', toggleWindow);
+  tray.on('click', toggleWorkspace);
   tray.on('right-click', () => tray.popUpContextMenu());
-  tray.on('balloon-click', () => showWindow());
+  tray.on('balloon-click', () => showChat());
   refreshTrayMenu();
 }
 
@@ -526,6 +618,23 @@ function statePayload() {
     members: server ? server.snapshot().members : [],
     blocked: server ? server.snapshot().blocked : [],
     me: room ? { id: 'host', name: room.host.name, color: room.host.color, kind: 'desktop' } : null,
+  };
+}
+
+function chatSummaryPayload() {
+  const snap = server ? server.snapshot() : null;
+  const msgs = store ? store.messages() : [];
+  const last = msgs.filter((m) => m.kind !== 'system' && !m.recalled).slice(-1)[0] || null;
+  return {
+    room: snap ? snap.room : null,
+    members: snap ? snap.members : [],
+    unread,
+    last: last ? {
+      id: last.id,
+      text: last.kind === 'text' ? last.text : (last.kind === 'image' ? '[图片]' : `[文件] ${last.name || ''}`),
+      author: last.author ? last.author.name : '',
+      ts: last.ts,
+    } : null,
   };
 }
 
@@ -741,6 +850,84 @@ function registerIpc() {
 
   ipcMain.handle('room:invite', async () => (server ? server.invite() : null));
 
+  // ---------- 工作台 ----------
+  ipcMain.handle('workspace:state', () => ({
+    version: app.getVersion(),
+    platform: process.platform,
+    chat: chatSummaryPayload(),
+    remote: remote ? remote.state() : null,
+    home: os.hostname(),
+  }));
+  ipcMain.handle('workspace:chat-summary', () => chatSummaryPayload());
+  ipcMain.handle('workspace:open-chat', () => { showChat(); return true; });
+  ipcMain.handle('workspace:theme', (_e, theme) => {
+    workspaceTheme = theme === 'dark' ? 'dark' : 'light';
+    core.setTheme(workspaceTheme);
+    return workspaceTheme;
+  });
+  ipcMain.handle('workspace:window', (_e, action) => {
+    if (!workspaceWin || workspaceWin.isDestroyed()) return false;
+    if (action === 'minimize') workspaceWin.minimize();
+    else if (action === 'maximize') {
+      if (workspaceWin.isMaximized()) workspaceWin.unmaximize();
+      else workspaceWin.maximize();
+    } else if (action === 'close') workspaceWin.hide();
+    return true;
+  });
+
+  // ---------- 远程工位 ----------
+  ipcMain.handle('remote:state', () => (remote ? remote.state() : null));
+  ipcMain.handle('remote:discover', () => (remote ? remote.peerList() : []));
+  ipcMain.handle('remote:agent', (_e, on) => (remote ? remote.setAgent(!!on) : null));
+  ipcMain.handle('remote:refresh-code', () => (remote ? remote.refreshCode() : null));
+  ipcMain.handle('remote:connect', async (_e, payload) => {
+    if (!remote) throw new Error('远程模块未启动');
+    return remote.connect(String(payload?.peerId || ''), String(payload?.code || ''));
+  });
+  ipcMain.handle('remote:disconnect', () => { if (remote) remote.disconnect(); return true; });
+  ipcMain.handle('remote:end-active', () => { if (remote) remote.stopActive('manual'); return remote ? remote.state() : null; });
+  ipcMain.handle('remote:dm', (_e, payload) => (remote ? remote.sendDM(String(payload?.peerId || ''), String(payload?.text || '')) : null));
+  ipcMain.handle('remote:pick-file', async () => {
+    if (!remote) return null;
+    const r = await dialog.showOpenDialog(workspaceWin, {
+      title: '发送文件到工位电脑',
+      properties: ['openFile'],
+      buttonLabel: '发送',
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    return remote.sendFile(r.filePaths[0]);
+  });
+  ipcMain.handle('remote:send-file', (_e, filePath) => (remote ? remote.sendFile(String(filePath || '')) : null));
+  ipcMain.handle('remote:history', () => (remote ? remote.getHistory() : []));
+  ipcMain.handle('remote:audit', () => (remote ? remote.getAudit() : []));
+  ipcMain.handle('remote:diagnostics', () => (remote ? remote.diagnostics() : null));
+  ipcMain.handle('remote:export-audit', async () => {
+    if (!remote) return null;
+    const r = await dialog.showSaveDialog(workspaceWin, {
+      title: '导出本机审计',
+      defaultPath: path.join(app.getPath('downloads'), `nearsend-audit-${Date.now()}.json`),
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (r.canceled || !r.filePath) return null;
+    fs.writeFileSync(r.filePath, JSON.stringify(remote.getAudit(), null, 2));
+    return r.filePath;
+  });
+  ipcMain.handle('remote:export-diag', async () => {
+    if (!remote) return null;
+    const r = await dialog.showSaveDialog(workspaceWin, {
+      title: '导出诊断包',
+      defaultPath: path.join(app.getPath('downloads'), `nearsend-diagnostics-${Date.now()}.json`),
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (r.canceled || !r.filePath) return null;
+    fs.writeFileSync(r.filePath, JSON.stringify(remote.diagnostics(), null, 2));
+    return r.filePath;
+  });
+  ipcMain.on('remote:input', (_e, evt) => { if (remote) remote.sendInput(evt); });
+  ipcMain.on('remote:clipboard', (_e, text) => { if (remote) remote.sendClipboard(text); });
+  ipcMain.on('remote:display', (_e, index) => { if (remote) remote.setDisplay(index); });
+  ipcMain.on('remote:quality', (_e, quality) => { if (remote) remote.setQuality(quality); });
+
   ipcMain.on('mode', (_e, mode) => setMode(mode === 'full'));
   ipcMain.on('hide', () => hideWindow());
 
@@ -850,6 +1037,10 @@ function applyInstallerPrefs() {
 
 async function boot() {
   config.load();
+  // 3.0 统一工作台以浅色为默认；只迁移一次，之后仍可在设置里切深色。
+  if (!config.get('v3ThemeInit')) {
+    config.patch({ theme: 'light', v3ThemeInit: true });
+  }
   applyInstallerPrefs();
 
   const saveDir = config.get('saveDir');
@@ -876,6 +1067,19 @@ async function boot() {
   createWindow();
   createTray();
   registerIpc();
+
+  remote = new RemoteManager({ userDataDir: app.getPath('userData'), version: app.getVersion() });
+  remote.on('peers', (peers) => sendWorkspace('workspace:event', { t: 'peers', peers }));
+  remote.on('state', (state) => sendWorkspace('workspace:event', { t: 'remote-state', state }));
+  remote.on('session', (session) => sendWorkspace('workspace:event', { t: 'session', session }));
+  remote.on('frame', (frame) => sendWorkspace('workspace:event', { t: 'frame', frame }));
+  remote.on('chat', (chat) => sendWorkspace('workspace:event', { t: 'chat', chat }));
+  remote.on('clipboard', (clipboard) => sendWorkspace('workspace:event', { t: 'clipboard', clipboard }));
+  remote.on('file-progress', (file) => sendWorkspace('workspace:event', { t: 'file-progress', file }));
+  remote.on('audit', (audit) => sendWorkspace('workspace:event', { t: 'audit', audit }));
+  await remote.init();
+  createWorkspaceWindow();
+
   server.on('room', (p) => send('ev', { t: 'room', room: p.room, members: p.members, blocked: p.blocked }));
   server.on('typing', (p) => send('ev', { t: 'typing', member: p.member, on: !!p.on }));
   // 手机在下载电脑上的文件时，把进度推给界面
@@ -900,7 +1104,7 @@ async function boot() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => showWindow());
+  app.on('second-instance', () => showWorkspace());
 
   app.setAppUserModelId('com.nearsend.app');
 
@@ -913,7 +1117,9 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     quitting = true;
     if (ipTimer) clearInterval(ipTimer);
+    if (remote) remote.stop();
     if (server) server.stop();
+    if (workspaceWin && !workspaceWin.isDestroyed()) workspaceWin.destroy();
     if (tray) {
       tray.destroy();
       tray = null;

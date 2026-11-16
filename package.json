@@ -1,8 +1,8 @@
 {
   "name": "nearsend",
   "productName": "NearSend",
-  "version": "2.2.0",
-  "description": "近传：同一 Wi-Fi 下的局域网群聊，手机和电脑免安装扫码加入，直传文字、图片和文件，不登录、不上云",
+  "version": "3.0.0",
+  "description": "近传 3.0：局域网远程工位 + 群聊。Windows 控制端直连工位电脑，保留手机扫码群聊、文件传输与团队协作",
   "main": "src/main/main.js",
   "author": {
     "name": "NearSend"
@@ -13,8 +13,12 @@
     "start": "electron .",
     "icon": "node tools/gen-icon.js",
     "icon:android": "node tools/gen-android-icon.js",
+    "build:input": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-remote-input.ps1",
     "test": "node tools/test-server.js",
     "test:e2e": "node tools/e2e-mobile.js",
+    "predist": "npm run build:input",
+    "predist:setup": "npm run build:input",
+    "predist:dir": "npm run build:input",
     "dist": "electron-builder --win nsis portable",
     "dist:setup": "electron-builder --win nsis",
     "dist:dir": "electron-builder --win --dir"

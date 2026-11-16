@@ -17,6 +17,9 @@ npmRebuild: false
 compression: maximum
 asar: true
 
+asarUnpack:
+  - assets/remote-input.exe
+
 files:
   - package.json
   - src/**/*

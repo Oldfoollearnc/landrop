@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>近传 · 远程工位 — Windows 局域网远程</title>
+<meta name="description" content="近传 · 远程工位：在同一局域网内，从另一台 Windows 连回工位电脑。P2P 直连、不经过云端、锁屏可连、设备授权、群聊与私聊一体。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%232563EB'/%3E%3Crect x='5' y='6' width='14' height='9' rx='1.5' fill='none' stroke='white' stroke-width='1.4'/%3E%3Cpath d='M9 19h6M12 15v4' stroke='white' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">跳到主要内容</a>
+
+<header class="site-header">
+  <div class="container header-inner">
+    <a class="brand" href="index.html" aria-label="近传 · 远程工位首页">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="12" rx="2.2"/>
+          <path d="M8 20h8M12 16v4"/>
+          <path d="M7.5 10.5h3M13.5 10.5h3"/>
+        </svg>
+      </span>
+      <span class="brand-text">近传 <span>·</span> 远程工位</span>
+    </a>
+
+    <nav class="site-nav" aria-label="主导航">
+      <a href="#features">功能</a>
+      <a href="#security">安全</a>
+      <a href="#chat">群聊</a>
+      <a href="#deploy">部署</a>
+      <a href="release.html">发布</a>
+    </nav>
+
+    <div class="header-actions">
+      <span class="header-note">Windows 内网自用</span>
+      <a class="btn btn-primary btn-sm" href="#download">下载内测版</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- Hero -->
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="container">
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <span class="eyebrow">近传 3.0 · 远程工位 V1.0 内测</span>
+          <h1 id="hero-title">在办公室，从另一台 Windows 连回你的<span class="text-accent">工位电脑</span>。</h1>
+          <p class="hero-lead">局域网 P2P、不经过云端、锁屏可连、设备授权、群聊与私聊一体。为同一间办公室里的临时远程与 IT 支持而设计。</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="#download">
+              下载 Windows 版
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 8h10M9 4l4 4-4 4"/>
+              </svg>
+            </a>
+            <a class="btn btn-secondary" href="release.html">查看发布说明</a>
+          </div>
+          <div class="hero-meta">
+            <span><i class="meta-dot" aria-hidden="true"></i>同一 Wi-Fi / VLAN</span>
+            <span><i class="meta-dot" aria-hidden="true"></i>无需公网</span>
+            <span><i class="meta-dot" aria-hidden="true"></i>原生键鼠</span>
+          </div>
+        </div>
+
+        <figure class="hero-visual">
+          <div class="app-frame">
+            <div class="app-frame-bar">
+              <span class="brand-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="4" width="18" height="12" rx="2.2"/>
+                  <path d="M8 20h8M12 16v4"/>
+                </svg>
+              </span>
+              <span class="app-frame-title">近传 · 远程工位</span>
+              <span class="app-frame-status"><i class="status-dot" aria-hidden="true"></i>本机在线 · 5GHz</span>
+            </div>
+            <img src="img/01-devices.png" width="1800" height="1245" decoding="async" alt="近传设备控制台：左侧为设备列表，右侧显示工位详情、连接状态与权限。">
+          </div>
+          <figcaption class="shot-caption">
+            <span>设备控制台</span>
+            <span>P2P 直连 · 无 Hub</span>
+          </figcaption>
+        </figure>
+      </div>
+
+      <div class="trust-strip" aria-label="产品要点">
+        <div class="trust-item">
+          <span class="trust-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg>
+          </span>
+          <div><b>P2P 直连</b><span>不经过云端</span></div>
+        </div>
+        <div class="trust-item">
+          <span class="trust-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg>
+          </span>
+          <div><b>6 位码配对</b><span>设备确认后连接</span></div>
+        </div>
+        <div class="trust-item">
+          <span class="trust-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg>
+          </span>
+          <div><b>Windows 10 / 11</b><span>仅 x64 桌面版</span></div>
+        </div>
+        <div class="trust-item">
+          <span class="trust-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg>
+          </span>
+          <div><b>内部自用</b><span>由 IT 统一分发</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 核心功能 -->
+  <section class="section" id="features" aria-labelledby="features-title">
+    <div class="container">
+      <div class="section-head">
+        <span class="eyebrow">核心功能</span>
+        <h2 id="features-title">一台工位电脑，成为你手边的远程桌面。</h2>
+        <p>设备、连接、授权与协作集中在一个工作台里。没有新的账号体系，也没有中心服务器。</p>
+      </div>
+
+      <div class="features-grid">
+        <article class="feature-card">
+          <span class="feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="12" rx="2"/>
+              <path d="M8 20h8M12 16v4M7.5 10h3M13.5 10h3"/>
+            </svg>
+          </span>
+          <h3>设备控制台</h3>
+          <p>设备、会话、授权、审计、诊断与设置集中在一个窗口。在线状态、最近会话和当前权限一目了然。</p>
+        </article>
+
+        <article class="feature-card">
+          <span class="feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 3 7 21M17 3l-2 18M4 9h17M3 15h17"/>
+            </svg>
+          </span>
+          <h3>6 位码配对</h3>
+          <p>被控端生成 6 位配对码，控制端输入后在工位电脑确认。无需公网地址，也不用额外注册账号。</p>
+        </article>
+
+        <article class="feature-card">
+          <span class="feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2.5" y="6" width="19" height="12" rx="2"/>
+              <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/>
+            </svg>
+          </span>
+          <h3>真实键鼠远控</h3>
+          <p>传输真实屏幕与键鼠输入，支持常用快捷键、滚轮、剪贴板与锁屏解锁，操作方式与坐在工位前一致。</p>
+        </article>
+
+        <article class="feature-card">
+          <span class="feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="13" height="9" rx="1.6"/>
+              <rect x="8" y="10" width="13" height="9" rx="1.6"/>
+            </svg>
+          </span>
+          <h3>双屏切换 / 画质</h3>
+          <p>双屏按显示器切换查看，根据网络状况调整画质与帧率。5GHz Wi-Fi 下优先保证操作流畅。</p>
+        </article>
+
+        <article class="feature-card">
+          <span class="feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/>
+              <circle cx="9" cy="7" r="3"/>
+              <path d="M22 20v-1.5a4 4 0 0 0-3-3.87M17 4.13a4 4 0 0 1 0 5.74"/>
+            </svg>
+          </span>
+          <h3>群聊 + 同事私聊</h3>
+          <p>团队群聊与一对一同事私聊同在工作台。讨论、支持请求与设备信息不必再切到外部聊天工具。</p>
+        </article>
+
+        <article class="feature-card">
+          <span class="feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3l7 3v6c0 4.4-3 7.4-7 9-4-1.6-7-4.6-7-9V6l7-3z"/>
+              <path d="M9.5 12l1.8 1.8 3.7-4"/>
+            </svg>
+          </span>
+          <h3>本机被控 / 授权码</h3>
+          <p>每台电脑都能作为被控端。本机授权码、连接请求与临时授权由使用者本人确认，可随时结束会话。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- 统一工作台 -->
+  <section class="section section--compact" aria-labelledby="workbench-title">
+    <div class="container">
+      <div class="band">
+        <div class="band-copy">
+          <span class="eyebrow">统一工作台</span>
+          <h2 id="workbench-title">找设备、开会话、查记录，都从一个入口开始。</h2>
+          <p>设备、会话、授权、审计、诊断和设置共享同一套界面与操作逻辑，减少在多个工具之间来回切换。</p>
+          <ul class="tick-list">
+            <li>
+              <span class="tick" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg></span>
+              搜索设备、员工或资产编号，直接进入连接。
+            </li>
+            <li>
+              <span class="tick" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg></span>
+              执行添加设备、网络自检、查看审计、打开设置等操作。
+            </li>
+            <li>
+              <span class="tick" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg></span>
+              键盘优先，常用操作不必离开当前页面。
+            </li>
+          </ul>
+        </div>
+        <div class="band-visual">
+          <div class="frame">
+            <img src="img/12-command.png" width="1800" height="1245" loading="lazy" decoding="async" alt="近传命令面板：可搜索设备、员工或执行添加设备、网络自检等操作。">
+          </div>
+          <span class="frame-caption">Ctrl K · 搜索设备、员工或执行操作</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 远程会话 -->
+  <section class="section section--white" id="session" aria-labelledby="session-title">
+    <div class="container showcase-grid">
+      <div class="showcase-copy">
+        <span class="eyebrow">远程会话</span>
+        <h2 id="session-title">真实屏幕与原生键鼠，操作习惯不用改。</h2>
+        <p>会话窗口独立呈现工位屏幕，键盘、鼠标与常用快捷键直接送达被控端。需要时可在会话内解锁工位锁屏。</p>
+        <ul class="spec-list">
+          <li><b>画面</b><span>真实桌面串流，支持双屏切换与画质调整。</span></li>
+          <li><b>输入</b><span>键鼠、滚轮、常用组合键与剪贴板。</span></li>
+          <li><b>解锁</b><span>输入 Windows 账户密码，解锁工位锁屏。</span></li>
+          <li><b>网络</b><span>局域网 P2P 直连，状态栏显示延迟与码率。</span></li>
+        </ul>
+      </div>
+      <figure class="showcase-figure">
+        <div class="frame">
+          <img src="img/05-session.png" width="1800" height="1245" loading="lazy" decoding="async" alt="远程会话窗口：工位桌面、顶栏连接状态与底部网络信息。">
+        </div>
+        <figcaption>
+          <span>远程会话界面</span>
+          <span>双屏切换 · 画质自适应</span>
+        </figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 安全与授权 -->
+  <section class="section" id="security" aria-labelledby="security-title">
+    <div class="container">
+      <div class="section-head">
+        <span class="eyebrow">安全与边界</span>
+        <h2 id="security-title">连接留在局域网，权限留在工位端。</h2>
+        <p>近传不建立新的账号体系，也不把屏幕与输入送到云端。授权范围、到期时间和会话行为由工位电脑与使用者掌握。</p>
+      </div>
+
+      <div class="security-grid">
+        <div class="security-list">
+          <article class="security-item">
+            <span class="security-num" aria-hidden="true">01</span>
+            <div>
+              <h3>P2P 局域网</h3>
+              <p>控制端与被控端在同一网络内直接建立连接，屏幕与输入不经过云端或第三方中转服务器。</p>
+            </div>
+          </article>
+          <article class="security-item">
+            <span class="security-num" aria-hidden="true">02</span>
+            <div>
+              <h3>无 Hub、无集中管理</h3>
+              <p>没有中心服务器保存会话与设备清单；设备、授权和审计数据留在各自的工位电脑上。</p>
+            </div>
+          </article>
+          <article class="security-item">
+            <span class="security-num" aria-hidden="true">03</span>
+            <div>
+              <h3>Windows 本地账号</h3>
+              <p>连接与解锁沿用本机的 Windows 账户体系，不创建独立的产品密码或组织账号。</p>
+            </div>
+          </article>
+          <article class="security-item">
+            <span class="security-num" aria-hidden="true">04</span>
+            <div>
+              <h3>PIN / 指纹不可远程</h3>
+              <p>远程解锁只接受 Windows 账户密码。PIN、指纹、面容等本机验证方式不能在远程会话中使用。</p>
+            </div>
+          </article>
+          <article class="security-item">
+            <span class="security-num" aria-hidden="true">05</span>
+            <div>
+              <h3>默认不录制</h3>
+              <p>会话默认不录制屏幕，也不在后台保留画面。是否留存操作记录由本机授权与审计设置决定。</p>
+            </div>
+          </article>
+          <article class="security-item">
+            <span class="security-num" aria-hidden="true">06</span>
+            <div>
+              <h3>管理员临时授权 8 小时</h3>
+              <p>管理员授权默认 8 小时到期，无人值守模式默认关闭；需要时由工位端明确开启。</p>
+            </div>
+          </article>
+        </div>
+
+        <figure class="security-figure">
+          <div class="frame">
+            <img src="img/04-unlock.png" width="1800" height="1245" loading="lazy" decoding="async" alt="工位锁屏解锁界面：选择 Windows 账户并输入密码，PIN 与指纹不可用于远程解锁。">
+          </div>
+          <figcaption>锁屏会话：使用 Windows 账户密码解锁工位。</figcaption>
+          <div class="security-note">
+            <b>远程解锁的边界：</b>只接受 Windows 账户密码。PIN、指纹与面容识别仅在本机有效，不会通过网络传输。
+          </div>
+        </figure>
+      </div>
+
+      <div class="authorization" aria-labelledby="authorization-title">
+        <div class="subhead">
+          <h3 id="authorization-title">本机被控与授权</h3>
+          <span>授权到期自动失效</span>
+        </div>
+        <div class="authorization-grid">
+          <article class="shot-card">
+            <img src="img/06-agent.png" width="1800" height="1245" loading="lazy" decoding="async" alt="本机被控预览：显示当前控制方、会话时长、待处理请求与已授权控制端。">
+            <div class="shot-card-body">
+              <h4>本机被控</h4>
+              <p>被控端始终可见：谁在连接、当前权限、剪贴板与文件操作，以及结束会话的入口。连接请求由本机确认。</p>
+            </div>
+          </article>
+          <article class="shot-card">
+            <img src="img/11-grants.png" width="1800" height="1245" loading="lazy" decoding="async" alt="授权列表：展示设备、控制端、权限摘要、到期时间、状态与最近使用时间。">
+            <div class="shot-card-body">
+              <h4>授权与审计</h4>
+              <p>授权关系、剩余时间与最近使用情况集中展示；临时管理员授权默认 8 小时到期，过期后自动失效。</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 群聊与私聊 -->
+  <section class="section section--white" id="chat" aria-labelledby="chat-title">
+    <div class="container chat-grid">
+      <div class="section-head">
+        <span class="eyebrow">群聊与私聊</span>
+        <h2 id="chat-title">讨论、支持和设备，在同一个内网工作台。</h2>
+        <p>远程支持往往从一句“你现在方便吗”开始。近传把团队群聊、同事私聊与设备控制放在同一处，不必在外部 IM 与远控工具之间来回切换。</p>
+        <ul class="tick-list">
+          <li>
+            <span class="tick" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg></span>
+            团队群聊承载部门通知、项目讨论与支持请求。
+          </li>
+          <li>
+            <span class="tick" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg></span>
+            同事私聊用于一对一沟通，不离开当前工作台。
+          </li>
+          <li>
+            <span class="tick" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg></span>
+            消息、文件与设备授权只在局域网内流转。
+          </li>
+        </ul>
+      </div>
+
+      <div class="collab-stack">
+        <article class="collab-card">
+          <span class="collab-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/>
+              <circle cx="9" cy="7" r="3"/>
+              <path d="M22 20v-1.5a4 4 0 0 0-3-3.87M17 4.13a4 4 0 0 1 0 5.74"/>
+            </svg>
+          </span>
+          <div>
+            <h3>团队群聊</h3>
+            <p>把讨论、文件与支持请求放在同一个房间。设备信息可以直接贴给同事，减少来回确认。</p>
+            <div class="chips"><span>文字</span><span>文件</span><span>@ 成员</span><span>内网可见</span></div>
+          </div>
+        </article>
+
+        <article class="collab-card">
+          <span class="collab-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="8" r="3.2"/>
+              <path d="M5.5 20a6.5 6.5 0 0 1 13 0"/>
+            </svg>
+          </span>
+          <div>
+            <h3>同事私聊</h3>
+            <p>一对一说明问题、发送截图或约一个远程时间，不必切换到手机上的外部聊天应用。</p>
+            <div class="chips"><span>一对一</span><span>支持请求</span><span>会话上下文</span></div>
+          </div>
+        </article>
+
+        <p class="collab-foot">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="7" width="10" height="7" rx="1.5"/>
+            <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>
+          </svg>
+          无需外部账号；消息与文件不经过公网服务。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 场景 -->
+  <section class="section" id="scenarios" aria-labelledby="scenarios-title">
+    <div class="container">
+      <div class="section-head">
+        <span class="eyebrow">使用场景</span>
+        <h2 id="scenarios-title">临时需要工位，不必回到座位。</h2>
+        <p>为同一间办公室、同一层楼或同一 VLAN 里的短时远程而设计。</p>
+      </div>
+      <div class="scenario-grid">
+        <article class="scenario-card">
+          <span class="scenario-num" aria-hidden="true">01</span>
+          <h3>会议室连工位</h3>
+          <p>笔记本接入同一 VLAN，连回桌面继续处理会议材料、报表与内部系统。</p>
+        </article>
+        <article class="scenario-card">
+          <span class="scenario-num" aria-hidden="true">02</span>
+          <h3>IT 临时支持</h3>
+          <p>管理员在授权时限内接管工位，处理软件与设置问题，到期后自动失效。</p>
+        </article>
+        <article class="scenario-card">
+          <span class="scenario-num" aria-hidden="true">03</span>
+          <h3>共享工位</h3>
+          <p>按设备与账号授权使用，不共享 Windows 密码，也不留下长期权限。</p>
+        </article>
+        <article class="scenario-card">
+          <span class="scenario-num" aria-hidden="true">04</span>
+          <h3>群聊协作</h3>
+          <p>把设备、文件和同事放在同一个工作台，支持请求不必离开内网。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- 适用范围 -->
+  <section class="section section--white" id="fit" aria-labelledby="fit-title">
+    <div class="container">
+      <div class="section-head">
+        <span class="eyebrow">适用范围</span>
+        <h2 id="fit-title">为办公室内网而做，边界清楚。</h2>
+        <p>近传不是公网远程桌面的替代品。它适合局域网内、有人值守的 Windows 工位。</p>
+      </div>
+      <div class="fit-grid">
+        <article class="fit-card fit-yes">
+          <div class="fit-head">
+            <span class="fit-head-icon" aria-hidden="true">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg>
+            </span>
+            <h3>适合</h3>
+            <span>公司内网</span>
+          </div>
+          <ul>
+            <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4.5"/></svg>公司内网中的 Windows 10 / 11 办公电脑</li>
+            <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4.5"/></svg>同一 Wi-Fi 或 VLAN 内的临时远程</li>
+            <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4.5"/></svg>需要真实键鼠、锁屏解锁与双屏操作</li>
+            <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4.5"/></svg>有内部 IT 统一分发与授权的团队</li>
+          </ul>
+        </article>
+
+        <article class="fit-card fit-no">
+          <div class="fit-head">
+            <span class="fit-head-icon" aria-hidden="true">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+            </span>
+            <h3>暂不适合</h3>
+            <span>边界之外</span>
+          </div>
+          <ul>
+            <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>公网、跨地域或家庭远程</li>
+            <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>关机或休眠状态下的远程唤醒</li>
+            <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>4K 高刷、专业图形与视频剪辑</li>
+            <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>用手机或平板控制 Windows</li>
+          </ul>
+        </article>
+      </div>
+      <p class="fit-note"><b>需要公网远程？</b>请使用公司批准的 VPN 与远程办公方案。近传不提供公网穿透，也不替代组织的集中管理平台。</p>
+    </div>
+  </section>
+
+  <!-- 部署 -->
+  <section class="section" id="deploy" aria-labelledby="deploy-title">
+    <div class="container">
+      <div class="section-head">
+        <span class="eyebrow">部署与系统要求</span>
+        <h2 id="deploy-title">由内部 IT 分发，几分钟完成第一次连接。</h2>
+        <p>控制端与被控端都运行 Windows 桌面版。安装包和离线更新包由内部 IT 统一提供。</p>
+      </div>
+
+      <div class="deploy-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>系统与网络要求</h3>
+            <span>V1.0.0 内测</span>
+          </div>
+          <div class="table-wrap">
+            <table class="spec-table">
+              <tbody>
+                <tr><th scope="row">操作系统</th><td>Windows 10 / 11 x64</td></tr>
+                <tr><th scope="row">网络</th><td>控制端与被控端在同一 Wi-Fi 或 VLAN，局域网互通</td></tr>
+                <tr><th scope="row">无线</th><td>建议 5GHz；2.4GHz 可用于轻量操作</td></tr>
+                <tr><th scope="row">画面</th><td>支持 1080p 至 2K，双屏可切换</td></tr>
+                <tr><th scope="row">安装</th><td>内测安装包与离线更新包，由内部 IT 分发</td></tr>
+                <tr><th scope="row">账号</th><td>使用本机 Windows 账户，不新建产品账号</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h3>首次连接</h3>
+            <span>4 步</span>
+          </div>
+          <ol class="steps">
+            <li><div><b>获取安装包</b><span>向内部 IT 获取 V1.0.0 内测包，确认系统版本。</span></div></li>
+            <li><div><b>接入同一网络</b><span>两台电脑接入同一 Wi-Fi 或 VLAN，优先 5GHz。</span></div></li>
+            <li><div><b>配对并授权</b><span>被控端生成 6 位码，控制端输入后在工位端确认权限。</span></div></li>
+            <li><div><b>开始会话</b><span>从设备控制台连接；锁屏时输入 Windows 账户密码。</span></div></li>
+          </ol>
+        </div>
+      </div>
+      <p class="deploy-note">更新使用离线包，由内部 IT 统一下发。内测阶段不提供面向公网的下载或自动更新通道。</p>
+    </div>
+  </section>
+
+  <!-- 下载 -->
+  <section class="section" id="download" aria-labelledby="download-title">
+    <div class="container">
+      <div class="download-card">
+        <div class="download-copy">
+          <span class="eyebrow">下载</span>
+          <h2 id="download-title">近传 · 远程工位 V1.0.0</h2>
+          <p>Windows 10 / 11 x64 · 内测版 · 2026-11-17</p>
+          <p>内测包由 IT 分发。下载入口开放后，将在此提供安装包与校验信息。</p>
+        </div>
+        <div class="download-actions">
+          <a class="btn btn-primary" href="#" aria-describedby="download-note">
+            下载内测版
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 8h10M9 4l4 4-4 4"/>
+            </svg>
+          </a>
+          <a class="btn btn-secondary" href="release.html">查看版本说明</a>
+          <span class="download-note" id="download-note">内测包由 IT 分发</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-main">
+      <div class="footer-brand">
+        <a class="brand" href="index.html" aria-label="近传 · 远程工位首页">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="12" rx="2.2"/>
+              <path d="M8 20h8M12 16v4"/>
+              <path d="M7.5 10.5h3M13.5 10.5h3"/>
+            </svg>
+          </span>
+          <span class="brand-text">近传 <span>·</span> 远程工位</span>
+        </a>
+        <p>局域网 P2P 远程工位，Windows 内网自用。</p>
+      </div>
+      <nav class="footer-links" aria-label="页脚导航">
+        <a href="#features">功能</a>
+        <a href="#security">安全</a>
+        <a href="#chat">群聊</a>
+        <a href="#deploy">部署</a>
+        <a href="release.html">发布说明</a>
+        <a href="#download">下载</a>
+      </nav>
+    </div>
+    <div class="footer-legal">
+      <span>内部自用</span>
+      <span class="dot" aria-hidden="true">·</span>
+      <span>无商业授权</span>
+      <span class="dot" aria-hidden="true">·</span>
+      <span>© 2026 近传 · 远程工位</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
