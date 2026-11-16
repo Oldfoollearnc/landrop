@@ -90,6 +90,17 @@
 - [ ] 最终重打包 + Release 资产覆盖 + 文档/远端同步
 - [ ] 后续：安全桌面、WebRTC/2K60、完整远程文件浏览器、录制保留策略
 
+## 最终状态 2026-11-17 04:00
+
+- 安装包：`dist/NearSend-3.0.0-Setup.exe` / `NearSend-3.0.0-Portable.exe`
+- SHA256：
+  - `a47aa7e94bdc09990367a0bf8d24bfa4813b89b1774b38af11ee9689c67ee3fc  NearSend-3.0.0-Setup.exe`
+  - `7fa933933bc8ff705d5c7764a0c39ea3882af4ebd42864d027b68390cd479f4a  NearSend-3.0.0-Portable.exe`
+- GitHub Release：https://github.com/Oldfoollearnc/landrop/releases/tag/v3.0.0
+- 远端 main 由 GitHub API 同步；本地分支另有提交，内容一致。
+- 打包版验证：GDI 采集约 14fps、屏幕帧、键鼠注入、6 位码、手动 IP、双向文件、录制、管理员 Grant/撤销、审计持久化。
+- 未完成/明确限制：安全桌面、WebRTC/2K60、完整远程文件浏览器、组织级审批/集中审计、录制保留策略。
+
 ## 关键决策
 
 - 统一桌面端：工作台窗口为主；现有聊天窗口保留为“团队群聊”，从工作台一键打开。
