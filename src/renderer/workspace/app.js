@@ -1504,6 +1504,7 @@ function openAddDevice() {
     <div class="modal-body">
       <p style="margin:0 0 10px;font-size:11.5px;color:var(--ink-3)">在工位电脑上打开近传，确保「本机被控」已开启。首次连接需要它显示的 6 位授权码。</p>
       ${peers.length ? `<div class="perm-table" style="margin-top:0">${peers.map((p) => `<div class="perm-row"><div class="perm-main"><b>${esc(p.name)} <span class="tag ok">在线</span></b><span>${esc(p.ip)} · ${esc(p.os || 'Windows')} · v${esc(p.version || '—')}</span></div><button class="btn btn-sm btn-primary" data-modal-action="connect-peer" data-peer-id="${p.id}">连接</button></div>`).join('')}</div>` : `<div class="empty-state" style="padding:24px 10px"><div class="empty-ico">${icon('wifi', 20)}</div><b>没有发现其他设备</b><p>请确认两台电脑在同一 Wi-Fi、未开启 AP 隔离，并且对方已开启「本机被控」。也可以先用本机预览验证画质与输入。</p></div>`}
+      <div class="field" style="margin-top:12px"><label for="manualAddr">广播被禁用？手动输入 IP:端口</label><div style="display:flex;gap:6px"><input class="input" id="manualAddr" placeholder="192.168.10.66:47820" autocomplete="off"><button class="btn" data-modal-action="manual-connect">添加</button></div><div class="hint">仍需工位端 6 位授权码；端口默认 47820。</div></div>
       <div class="role-row" style="margin-top:12px"><span>连接身份：</span><div class="seg">
         <button class="${state.addRole === 'owner' ? 'active' : ''}" data-modal-action="add-role" data-value="owner">我的设备</button>
         <button class="${state.addRole === 'admin' ? 'active' : ''}" data-modal-action="add-role" data-value="admin">管理员临时支持</button>
@@ -2425,6 +2426,20 @@ function bindModal() {
     }
     if (act?.dataset.modalAction === 'refresh-peers') {
       refreshPeers().then(() => openAddDevice());
+      return;
+    }
+    if (act?.dataset.modalAction === 'manual-connect') {
+      const raw = (document.getElementById('manualAddr')?.value || '').trim();
+      if (!raw) { toast('请输入 IP 地址', 'warn'); return; }
+      state.pendingRole = state.addRole;
+      window.workspace.remote.addManual(raw, 0).then(async (peer) => {
+        const rs = await window.workspace.remote.state();
+        state.remote = rs;
+        mergeRemoteState(rs);
+        closeModal();
+        const device = deviceById(`peer-${peer.id}`);
+        if (device) openSession(device.id); else toast('无法添加该地址', 'danger');
+      }).catch((err) => toast(err.message || '地址添加失败', 'danger'));
       return;
     }
     if (act?.dataset.modalAction === 'backup-create') {
