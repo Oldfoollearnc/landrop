@@ -908,6 +908,12 @@ function registerIpc() {
     shell.openPath(app.getPath('userData'));
     return true;
   });
+  ipcMain.handle('workspace:open-downloads', () => {
+    const dir = path.join(app.getPath('downloads'), 'NearSend');
+    try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+    shell.openPath(dir);
+    return dir;
+  });
   ipcMain.handle('workspace:read-clipboard', () => {
     try { return clipboard.readText(); } catch { return ''; }
   });
