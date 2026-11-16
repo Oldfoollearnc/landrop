@@ -611,8 +611,10 @@ class RemoteManager extends EventEmitter {
     this.startClipboardSync();
     if (fs.existsSync(this.capturePath)) {
       try {
+        const physical = physicalBounds(displayBounds(active.display));
         const child = spawn(this.capturePath, [
-          String(active.display), String(profile.width), String(profile.height), String(profile.quality), String(profile.fps),
+          String(physical.x), String(physical.y), String(physical.width), String(physical.height),
+          String(profile.width), String(profile.height), String(profile.quality), String(profile.fps),
         ], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
         this.captureHelper = child;
         this.captureMode = 'gdi';
