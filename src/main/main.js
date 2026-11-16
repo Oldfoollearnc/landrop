@@ -865,6 +865,17 @@ function registerIpc() {
     core.setTheme(workspaceTheme);
     return workspaceTheme;
   });
+  ipcMain.handle('workspace:save-recording', async (_e, name, data) => {
+    const safeName = String(name || 'NearSend-session.webm').replace(/[\\/:*?"<>|]/g, '_');
+    const r = await dialog.showSaveDialog(workspaceWin, {
+      title: '保存会话录制',
+      defaultPath: path.join(app.getPath('downloads'), safeName),
+      filters: [{ name: 'WebM 视频', extensions: ['webm'] }],
+    });
+    if (r.canceled || !r.filePath) return null;
+    fs.writeFileSync(r.filePath, Buffer.from(data));
+    return r.filePath;
+  });
   ipcMain.handle('workspace:autostart', async (_e, on) => {
     config.patch({ autostart: !!on });
     const st = await autostart.sync(!!on);
@@ -885,9 +896,10 @@ function registerIpc() {
   ipcMain.handle('remote:discover', () => (remote ? remote.peerList() : []));
   ipcMain.handle('remote:agent', (_e, on) => (remote ? remote.setAgent(!!on) : null));
   ipcMain.handle('remote:refresh-code', () => (remote ? remote.refreshCode() : null));
+  ipcMain.handle('remote:revoke-grant', (_e, controllerId) => (remote ? remote.revokeGrant(String(controllerId || '')) : false));
   ipcMain.handle('remote:connect', async (_e, payload) => {
     if (!remote) throw new Error('远程模块未启动');
-    return remote.connect(String(payload?.peerId || ''), String(payload?.code || ''));
+    return remote.connect(String(payload?.peerId || ''), String(payload?.code || ''), String(payload?.role || 'owner'));
   });
   ipcMain.handle('remote:disconnect', () => { if (remote) remote.disconnect(); return true; });
   ipcMain.handle('remote:end-active', () => { if (remote) remote.stopActive('manual'); return remote ? remote.state() : null; });
@@ -903,6 +915,17 @@ function registerIpc() {
     return remote.sendFile(r.filePaths[0]);
   });
   ipcMain.handle('remote:send-file', (_e, filePath) => (remote ? remote.sendFile(String(filePath || '')) : null));
+  ipcMain.handle('remote:send-file-to-controller', async (_e, filePath) => {
+    if (!remote) return null;
+    if (filePath) return remote.sendFileToActive(String(filePath));
+    const r = await dialog.showOpenDialog(workspaceWin, {
+      title: '发送文件给控制端',
+      properties: ['openFile'],
+      buttonLabel: '发送',
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    return remote.sendFileToActive(r.filePaths[0]);
+  });
   ipcMain.handle('remote:history', () => (remote ? remote.getHistory() : []));
   ipcMain.handle('remote:audit', () => (remote ? remote.getAudit() : []));
   ipcMain.handle('remote:diagnostics', () => (remote ? remote.diagnostics() : null));
@@ -932,6 +955,7 @@ function registerIpc() {
   ipcMain.on('remote:clipboard', (_e, text) => { if (remote) remote.sendClipboard(text); });
   ipcMain.on('remote:display', (_e, index) => { if (remote) remote.setDisplay(index); });
   ipcMain.on('remote:quality', (_e, quality) => { if (remote) remote.setQuality(quality); });
+  ipcMain.on('remote:recording', (_e, on) => { if (remote) remote.setRecording(!!on); });
 
   ipcMain.on('mode', (_e, mode) => setMode(mode === 'full'));
   ipcMain.on('hide', () => hideWindow());
