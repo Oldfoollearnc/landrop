@@ -890,6 +890,14 @@ function registerIpc() {
     } else if (action === 'close') workspaceWin.hide();
     return true;
   });
+  ipcMain.handle('workspace:open-help', () => {
+    shell.openExternal('https://github.com/Oldfoollearnc/landrop/releases/tag/v3.0.0');
+    return true;
+  });
+  ipcMain.handle('workspace:open-data-dir', () => {
+    shell.openPath(app.getPath('userData'));
+    return true;
+  });
 
   // ---------- 远程工位 ----------
   ipcMain.handle('remote:state', () => (remote ? remote.state() : null));
@@ -897,6 +905,7 @@ function registerIpc() {
   ipcMain.handle('remote:agent', (_e, on) => (remote ? remote.setAgent(!!on) : null));
   ipcMain.handle('remote:refresh-code', () => (remote ? remote.refreshCode() : null));
   ipcMain.handle('remote:revoke-grant', (_e, controllerId) => (remote ? remote.revokeGrant(String(controllerId || '')) : false));
+  ipcMain.handle('remote:forget-peer', (_e, peerId) => (remote ? remote.forgetPeer(String(peerId || '')) : false));
   ipcMain.handle('remote:connect', async (_e, payload) => {
     if (!remote) throw new Error('远程模块未启动');
     return remote.connect(String(payload?.peerId || ''), String(payload?.code || ''), String(payload?.role || 'owner'));
