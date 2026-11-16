@@ -8,8 +8,11 @@ contextBridge.exposeInMainWorld('workspace', {
   theme: (theme) => ipcRenderer.invoke('workspace:theme', theme),
   setAutostart: (on) => ipcRenderer.invoke('workspace:autostart', on),
   saveRecording: (name, data) => ipcRenderer.invoke('workspace:save-recording', name, data),
+  saveText: (name, content) => ipcRenderer.invoke('workspace:save-text', name, content),
   openHelp: () => ipcRenderer.invoke('workspace:open-help'),
   openDataDir: () => ipcRenderer.invoke('workspace:open-data-dir'),
+  readClipboard: () => ipcRenderer.invoke('workspace:read-clipboard'),
+  writeClipboard: (text) => ipcRenderer.invoke('workspace:write-clipboard', text),
   window: (action) => ipcRenderer.invoke('workspace:window', action),
   onEvent: (cb) => ipcRenderer.on('workspace:event', (_e, payload) => cb(payload)),
 
