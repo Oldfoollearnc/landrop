@@ -44,6 +44,16 @@ function displayBounds(index) {
   const displays = screen.getAllDisplays();
   return displays[index] || displays[0] || screen.getPrimaryDisplay();
 }
+function physicalBounds(display) {
+  const b = display.bounds;
+  try {
+    const p1 = screen.dipToScreenPoint({ x: b.x, y: b.y });
+    const p2 = screen.dipToScreenPoint({ x: b.x + b.width, y: b.y + b.height });
+    return { x: p1.x, y: p1.y, width: Math.max(1, p2.x - p1.x), height: Math.max(1, p2.y - p1.y) };
+  } catch {
+    return { x: b.x, y: b.y, width: b.width, height: b.height };
+  }
+}
 
 class RemoteManager extends EventEmitter {
   constructor({ userDataDir, version }) {
@@ -194,7 +204,7 @@ class RemoteManager extends EventEmitter {
         const t = now();
         let changed = false;
         for (const [id, p] of this.peers) {
-          if (!p.self && p.online && t - p.lastSeen > 9000) {
+          if (!p.self && !p.manual && p.online && t - p.lastSeen > 9000) {
             p.online = false;
             changed = true;
           }
@@ -244,8 +254,9 @@ class RemoteManager extends EventEmitter {
       if (this.peers.has(p.id)) continue;
       this.peers.set(p.id, {
         id: p.id, name: safeName(p.name, p.id), ip: p.ip || '', port: Number(p.port) || 0,
-        os: p.os || 'Windows', version: p.version || '', online: false,
+        os: p.os || 'Windows', version: p.version || '', online: p.manual ? true : false,
         lastSeen: Number(p.lastSeen) || 0, self: false,
+        manual: !!p.manual,
         displayCount: Math.max(1, Math.min(2, Number(p.displayCount) || 1)),
       });
     }
@@ -265,6 +276,7 @@ class RemoteManager extends EventEmitter {
       os: peer.os, version: peer.version, lastSeen: peer.lastSeen,
       displayCount: peer.displayCount || 1,
       displays: peer.displays || undefined,
+      manual: !!peer.manual,
     };
     this.saveKnownSoon();
   }
@@ -371,8 +383,31 @@ class RemoteManager extends EventEmitter {
     return this.code;
   }
 
-  forgetPeer(peerId) {
-    const id = String(peerId || '');
+  addManualPeer(address, portArg) {
+    let host = String(address || '').trim();
+    let port = Number(portArg) || 0;
+    if (!host) throw new Error('请输入 IP 地址');
+    if (!port && host.includes(':')) {
+      const parts = host.split(':');
+      host = parts[0];
+      port = Number(parts[1]) || 0;
+    }
+    if (!/^[0-9a-zA-Z.-]+$/.test(host)) throw new Error('地址格式不正确');
+    if (!port) port = WS_START;
+    if (port < 1 || port > 65535) throw new Error('端口不正确');
+    const id = `manual_${crypto.createHash('sha1').update(`${host}:${port}`).digest('hex').slice(0, 12)}`;
+    const peer = {
+      id, name: `手动 · ${host}`, ip: host, port, os: 'Windows', version: '',
+      online: true, lastSeen: now(), self: false, manual: true, displayCount: 1,
+    };
+    this.peers.set(id, peer);
+    this.rememberPeer(peer);
+    this.emit('peers', this.peerList());
+    this.emit('state', this.state());
+    return { id, name: peer.name, ip: host, port, online: true, displayCount: 1 };
+  }
+
+  forgetPeer(peerId) {    const id = String(peerId || '');
     if (!id) return false;
     const peer = this.peers.get(id);
     if (peer?.self) return false;
@@ -702,8 +737,9 @@ class RemoteManager extends EventEmitter {
       if (msg.action === 'move' || msg.action === 'down' || msg.action === 'up') {
         const nx = Math.max(0, Math.min(1, Number(msg.x) || 0));
         const ny = Math.max(0, Math.min(1, Number(msg.y) || 0));
-        const x = d.bounds.x + Math.round(nx * (d.bounds.width - 1));
-        const y = d.bounds.y + Math.round(ny * (d.bounds.height - 1));
+        const b = physicalBounds(d);
+        const x = b.x + Math.round(nx * (b.width - 1));
+        const y = b.y + Math.round(ny * (b.height - 1));
         this.writeHelper(`MM ${x} ${y}`);
         if (msg.action === 'down') this.writeHelper(`MD ${this.button(msg.button)}`);
         if (msg.action === 'up') this.writeHelper(`MU ${this.button(msg.button)}`);
