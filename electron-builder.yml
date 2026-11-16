@@ -19,6 +19,7 @@ asar: true
 
 asarUnpack:
   - assets/remote-input.exe
+  - assets/remote-capture.exe
 
 files:
   - package.json
