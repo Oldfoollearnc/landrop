@@ -24,6 +24,9 @@ npm start          # 统一工作台（远程工位 + 群聊）
 npm run dist       # NSIS + Portable（Windows x64）
 ```
 
+- 3.0 内测发布：<https://github.com/Oldfoollearnc/landrop/releases/tag/v3.0.0>
+- 安装包：`NearSend-3.0.0-Setup.exe` / `NearSend-3.0.0-Portable.exe`；校验 `SHA256SUMS.txt`。
+
 - 需要 Windows 10/11 x64；同一 Wi-Fi/VLAN；输入注入组件 `assets/remote-input.exe` 已随包分发。
 - 真实锁屏/UAC 安全桌面需要 Windows 服务，当前版本只覆盖已登录桌面；发布页已列出限制。
 - 远程传输层为 WS + JPEG（内网可用），2K/60fps/WebRTC 是后续迭代；不承诺公网、WoL、4K、手机控制端。
