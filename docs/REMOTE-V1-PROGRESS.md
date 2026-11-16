@@ -44,7 +44,7 @@
 - [x] 3.0 检查点提交并 push（1524812）
 - [x] 最终重新打包（`dist/NearSend-3.0.0-Setup.exe` / Portable，01:52；包含指针映射/超时/显示数量/设置持久化）
 - [x] Portable 启动验证（版本 3.0.0）
-- [x] 最终 commit + push（main `146acd5`；GitHub Release `v3.0.0` 已发布）
+- [x] 最终 commit + push（远端 main 由 GitHub API 同步；GitHub Release `v3.0.0` 已发布）
 - [ ] 如需继续：真实锁屏/UAC、WebRTC、管理员 Grant、录制、文件反向
 
 ## 推送状态
