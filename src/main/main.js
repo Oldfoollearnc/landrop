@@ -922,6 +922,10 @@ function registerIpc() {
   ipcMain.handle('remote:refresh-code', () => (remote ? remote.refreshCode() : null));
   ipcMain.handle('remote:revoke-grant', (_e, controllerId) => (remote ? remote.revokeGrant(String(controllerId || '')) : false));
   ipcMain.handle('remote:forget-peer', (_e, peerId) => (remote ? remote.forgetPeer(String(peerId || '')) : false));
+  ipcMain.handle('remote:add-manual', (_e, payload) => {
+    if (!remote) throw new Error('远程模块未启动');
+    return remote.addManualPeer(String(payload?.address || ''), Number(payload?.port) || 0);
+  });
   ipcMain.handle('remote:connect', async (_e, payload) => {
     if (!remote) throw new Error('远程模块未启动');
     return remote.connect(String(payload?.peerId || ''), String(payload?.code || ''), String(payload?.role || 'owner'));
