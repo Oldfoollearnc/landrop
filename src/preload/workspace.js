@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('workspace', {
     refreshCode: () => ipcRenderer.invoke('remote:refresh-code'),
     revokeGrant: (controllerId) => ipcRenderer.invoke('remote:revoke-grant', controllerId),
     forgetPeer: (peerId) => ipcRenderer.invoke('remote:forget-peer', peerId),
+    addManual: (address, port) => ipcRenderer.invoke('remote:add-manual', { address, port }),
     connect: (peerId, code, role) => ipcRenderer.invoke('remote:connect', { peerId, code, role: role === 'admin' ? 'admin' : 'owner' }),
     disconnect: () => ipcRenderer.invoke('remote:disconnect'),
     input: (evt) => ipcRenderer.send('remote:input', evt),
