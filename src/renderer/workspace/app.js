@@ -757,6 +757,11 @@ function mergeAuditEvent(evt) {
   });
 }
 
+async function mergeRemoteAudit() {
+  const audit = await window.workspace.remote.audit().catch(() => []);
+  audit.forEach(mergeAuditEvent);
+  if (state.view === 'audit') renderAudit();
+}
 function handleWorkspaceEvent(payload) {
   if (!payload || typeof payload !== 'object') return;
   if (payload.t === 'peers') {
@@ -961,7 +966,7 @@ function renderSessions() {
           <div class="stat-row" style="min-width:300px;flex:0 0 auto">
             <div class="stat"><span>时长</span><b data-session-duration>${formatDuration(current.duration || 0)}</b></div>
             <div class="stat"><span>画质</span><b>${esc(current.qualityLabel || '自动 1080p60')}</b></div>
-            <div class="stat"><span>延迟</span><b>18 ms</b></div>
+            <div class="stat"><span>延迟</span><b>${current.real ? 'LAN' : '18 ms'}</b></div>
           </div>
           <button class="btn btn-primary" data-action="resume-session">${icon('play', 14)} 返回会话</button>
         </div>
@@ -998,17 +1003,19 @@ function renderSessions() {
 /* ---------- grants view ---------- */
 function renderGrants() {
   const main = document.getElementById('main');
-  const list = GRANTS.filter((g) => g.scope === state.grantTab && deviceById(g.deviceId) && (DEMO_ENABLED || !deviceById(g.deviceId).demo));
+  const visible = GRANTS.filter((g) => deviceById(g.deviceId) && (DEMO_ENABLED || !deviceById(g.deviceId).demo));
+  const list = visible.filter((g) => g.scope === state.grantTab);
+  const count = (status) => visible.filter((g) => g.status === status).length;
   main.innerHTML = `
     <div class="page-head">
-      <div class="page-title"><h1>授权</h1><p>授权数据来自工位电脑；设备离线时显示上次同步，不能修改 · 上次同步 10:32</p></div>
+      <div class="page-title"><h1>授权</h1><p>本机缓存 · 以工位电脑的授权列表为准 · 当前内测版以 6 位码配对为主</p></div>
       <div class="page-actions"><button class="btn" data-action="refresh-grants">${icon('refresh', 14)} 同步</button></div>
     </div>
     <div class="summary-strip">
-      <button class="summary-chip warn" data-action="grant-filter" data-value="pending"><b>1</b> 待处理</button>
-      <button class="summary-chip" data-action="grant-filter" data-value="active"><b>8</b> 有效</button>
-      <button class="summary-chip danger" data-action="grant-filter" data-value="expiring"><b>2</b> 即将到期</button>
-      <button class="summary-chip" data-action="grant-filter" data-value="expired"><b>3</b> 已过期</button>
+      <button class="summary-chip warn" data-action="grant-filter" data-value="pending"><b>${count('待处理')}</b> 待处理</button>
+      <button class="summary-chip" data-action="grant-filter" data-value="active"><b>${count('有效')}</b> 有效</button>
+      <button class="summary-chip danger" data-action="grant-filter" data-value="expiring"><b>${count('即将到期') + count('临时')}</b> 即将到期</button>
+      <button class="summary-chip" data-action="grant-filter" data-value="expired"><b>${count('已过期')}</b> 已过期</button>
     </div>
     <div class="card">
       <div class="card-head">
@@ -1051,11 +1058,11 @@ function renderAudit() {
     <div class="page-head">
       <div class="page-title"><h1>审计</h1><p>本机记录 · 不上传 · 配对/会话/文件/私聊事件</p></div>
       <div class="page-actions">
-        <button class="btn" data-action="verify-audit">${icon('shieldCheck', 14)} 校验哈希链</button>
+        <button class="btn" data-action="verify-audit">${icon('refresh', 14)} 刷新</button>
         <button class="btn" data-action="export-audit">${icon('download', 14)} 导出</button>
       </div>
     </div>
-    <div class="perm-summary" style="display:flex;align-items:center;gap:6px;background:var(--green-soft);border-color:var(--green-line);color:var(--green);margin-bottom:12px">${icon('check', 13)} 哈希链校验通过 · 10:32 · 最近 90 天</div>
+    <div class="perm-summary" style="display:flex;align-items:center;gap:6px;background:var(--green-soft);border-color:var(--green-line);color:var(--green);margin-bottom:12px">${icon('check', 13)} 本机记录 · 只追加 · 不上传 · 最近 90 天</div>
     <div class="card">
       <div class="toolbar" style="padding:10px 12px 0;margin-bottom:8px">
         <button class="filter-chip ${state.auditFilter === 'all' ? 'active' : ''}" data-action="audit-filter" data-value="all">全部</button>
@@ -1681,9 +1688,9 @@ function openAuditDrawer(auditId) {
         <div class="card-note" style="color:var(--ink-2)">${esc(a.detail)}</div>
       </div>
       <div class="card" style="margin-top:10px">
-        <div class="card-head"><b>哈希链</b><span class="tag ok">通过</span></div>
-        <dl class="kv"><dt>hashPrev</dt><dd class="mono" style="font-size:9.5px">9f3c…a1b2</dd><dt>hashSelf</dt><dd class="mono" style="font-size:9.5px">7d21…e4c8</dd></dl>
-        <div class="card-note">技术详情；审计只追加，不可编辑/删除。</div>
+        <div class="card-head"><b>技术详情</b><span class="tag ok">本机</span></div>
+        <dl class="kv"><dt>事件 ID</dt><dd class="mono" style="font-size:9.5px">${esc(a.id)}</dd><dt>类型</dt><dd class="mono" style="font-size:9.5px">${esc(a.code)}</dd><dt>记录</dt><dd>只追加 · 不上传</dd></dl>
+        <div class="card-note">本机审计；不提供云端集中审计。导出用于内部支持。</div>
       </div>
     </div>
     <div class="drawer-foot"><button class="btn" data-drawer-close>关闭</button><span class="spacer"></span><button class="btn" data-drawer-action="copy-audit" data-audit-id="${a.id}">${icon('copy', 13)} 复制事件 ID</button></div>
@@ -2559,7 +2566,7 @@ function handleMainClick(e) {
     else if (a === 'grant-tab') { state.grantTab = act.dataset.value; renderGrants(); }
     else if (a === 'grant-filter') toast(`筛选：${act.textContent.trim()}（原型）`, 'success');
     else if (a === 'audit-filter') { state.auditFilter = act.dataset.value; renderAudit(); }
-    else if (a === 'verify-audit') toast('哈希链校验通过 · 10:32', 'success');
+    else if (a === 'verify-audit') { mergeRemoteAudit(); toast('本机审计已刷新', 'success'); }
     else if (a === 'export-audit') window.workspace.remote.exportAudit().then((p) => toast(p ? `审计已导出：${p}` : '已取消', p ? 'success' : 'info'));
     else if (a === 'run-diag') runDiagnostics();
     else if (a === 'copy-diag') copyText(`NEAR-SEND DIAG\n${JSON.stringify(state.diag || {}, null, 2)}`, '诊断结果已复制，可发给 IT');
