@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { WebSocketServer } = require('ws');
+const QRCode = require('qrcode');
 const netinfo = require('./netinfo');
 const { kindOf } = require('./store');
 
@@ -98,15 +99,31 @@ function deviceLabel(ua) {
   return `${os} · ${br}`;
 }
 
+function deviceKind(ua) {
+  if (/iPad|Tablet|PlayBook|Silk/i.test(ua)) return 'tablet';
+  if (/iPhone|Android|Mobile|Windows Phone/i.test(ua)) return 'phone';
+  return 'desktop';
+}
+
+function plainName(input, fallback) {
+  return String(input == null ? '' : input).replace(/\s+/g, ' ').trim().slice(0, 200) || fallback;
+}
+
+function escapeRe(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 class LanServer extends EventEmitter {
-  constructor({ core, uploads, token }) {
+  constructor({ core, uploads, token, room }) {
     super();
     this.core = core;
     this.uploads = uploads;
+    this.room = room;
     this.tokenBuf = Buffer.from(token);
     this.port = 0;
     this.clients = new Set();
     this.lastProgress = new Map();
+    this.qrCache = null;
 
     this.server = http.createServer((req, res) => {
       this.route(req, res).catch((err) => {
@@ -175,6 +192,7 @@ class LanServer extends EventEmitter {
 
   setToken(token) {
     this.tokenBuf = Buffer.from(token);
+    this.qrCache = null;
   }
 
   /** 重置令牌后踢掉所有已连接设备，它们必须重新扫码 */
@@ -187,6 +205,188 @@ class LanServer extends EventEmitter {
       }
     }
   }
+
+  // ---------- 群成员 ----------
+
+  onlineIds() {
+    const set = new Set();
+    for (const c of this.clients) {
+      if (c.member && c.ws.readyState === 1) set.add(c.member.id);
+    }
+    return set;
+  }
+
+  authorOf(member) {
+    if (!member) return null;
+    return {
+      id: member.id,
+      name: member.name,
+      color: member.color,
+      kind: member.kind,
+    };
+  }
+
+  legacyAuthor(req) {
+    const ua = req.headers['user-agent'] || '';
+    const kind = deviceKind(ua);
+    return {
+      id: 'legacy',
+      name: kind === 'desktop' ? '电脑' : '手机',
+      color: 'slate',
+      kind,
+    };
+  }
+
+  rosterPayload() {
+    const online = this.onlineIds();
+    return {
+      room: this.room.info(online),
+      members: this.room.roster(online),
+      blocked: this.room.blockedList(),
+    };
+  }
+
+  broadcastRoom() {
+    const payload = this.rosterPayload();
+    const frame = { t: 'room', room: payload.room, members: payload.members };
+    const raw = JSON.stringify(frame);
+    for (const c of this.clients) {
+      if (!c.member || c.ws.readyState !== 1) continue;
+      try {
+        c.ws.send(raw);
+      } catch {
+        /* 断开的连接由 close 处理 */
+      }
+    }
+    this.emit('room', payload);
+  }
+
+  /** 群主界面用：群信息 + 成员 + 黑名单 */
+  snapshot() {
+    return this.rosterPayload();
+  }
+
+  publishSystem(text, meta) {
+    if (!text) return null;
+    return this.core.publish({
+      from: 'system',
+      kind: 'system',
+      status: 'ok',
+      text,
+      sys: meta || {},
+    });
+  }
+
+  // ---------- 群主操作（只从桌面 IPC 调用） ----------
+
+  setRoomName(name) {
+    const changed = this.room.setName(name);
+    if (changed) {
+      this.publishSystem(`群名改为「${this.room.data.name}」`, { event: 'room-name' });
+      this.broadcastRoom();
+    }
+    return this.room.info(this.onlineIds());
+  }
+
+  setHostName(name) {
+    const result = this.room.renameHost(name);
+    if (result.renamed) {
+      this.publishSystem(`${result.oldName} 改名为 ${result.member.name}`, {
+        event: 'rename',
+        actor: { id: 'host', name: result.member.name },
+      });
+      this.broadcastRoom();
+    }
+    return result;
+  }
+
+  setLocked(locked) {
+    this.room.setLocked(locked);
+    this.broadcastRoom();
+    return this.room.info(this.onlineIds());
+  }
+
+  kick(id) {
+    const member = this.room.kick(id);
+    for (const c of [...this.clients]) {
+      if (!c.member || c.member.id !== member.id) continue;
+      c.member = null;
+      this.send(c.ws, { t: 'kicked', code: 'kicked', message: '你已被移出群聊' });
+      try {
+        c.ws.close(4003, 'kicked');
+      } catch {
+        /* ignore */
+      }
+    }
+    this.publishSystem(`${member.name} 被移出群聊`, {
+      event: 'kick',
+      target: { id: member.id, name: member.name },
+    });
+    this.broadcastRoom();
+    return member;
+  }
+
+  unblock(id) {
+    const ok = this.room.unblock(id);
+    if (ok) this.broadcastRoom();
+    return ok;
+  }
+
+  renameMember(id, name) {
+    const result = this.room.renameMember(id, name);
+    if (result.renamed) {
+      this.publishSystem(`${result.oldName} 改名为 ${result.member.name}`, {
+        event: 'rename',
+        actor: { id: result.member.id, name: result.member.name },
+      });
+      this.broadcastRoom();
+    }
+    return result;
+  }
+
+  markSeen(memberId, ids) {
+    if (!Array.isArray(ids) || !memberId) return;
+    const now = Date.now();
+    for (const id of ids.slice(0, 200)) {
+      const msg = this.core.get(id);
+      if (!msg || msg.kind === 'system' || msg.status !== 'ok' || msg.recalled) continue;
+      const authorId = msg.uid || (msg.from === 'pc' ? 'host' : 'legacy');
+      if (authorId === memberId) continue;
+      const seenBy = Array.isArray(msg.seenBy) ? msg.seenBy.slice() : [];
+      if (seenBy.includes(memberId)) continue;
+      seenBy.push(memberId);
+      this.core.patch(id, { seenBy: seenBy.slice(-64), seen: msg.seen || now }, true);
+    }
+  }
+
+  hostTyping(on) {
+    this.broadcast({ t: 'typing', id: 'host', name: this.room.host.name, on: !!on });
+  }
+
+  async invite() {
+    const url = this.core.getUrl();
+    if (!url) return null;
+    if (this.qrCache && this.qrCache.url === url) return this.qrCache;
+    let qr = '';
+    try {
+      qr = await QRCode.toDataURL(url, {
+        margin: 1,
+        width: 560,
+        errorCorrectionLevel: 'M',
+        color: { dark: '#0a0a0b', light: '#ffffff' },
+      });
+    } catch (err) {
+      console.error('[qr]', err.message);
+    }
+    this.qrCache = { url, qr };
+    return this.qrCache;
+  }
+
+  onlineNames() {
+    const online = this.onlineIds();
+    return this.room.roster(online).filter((m) => m.online && !m.isHost).map((m) => m.name);
+  }
+
 
   /** 锁屏后 NAT 超时的半死连接不会触发 close，靠 ping/pong 判活 */
   heartbeat() {
@@ -242,6 +442,43 @@ class LanServer extends EventEmitter {
     return `ld=${this.tokenBuf.toString()}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax`;
   }
 
+  /**
+   * HTTP 请求的成员身份。
+   * 没带成员头 = 旧客户端（Android 原生分享/通知回复），走兼容身份；
+   * 带了但校验失败 = 明确拒绝，不能悄悄降级成匿名，否则被移出的人还能继续发。
+   */
+  authHttp(req, body) {
+    const id = String(req.headers['x-ns-member'] || (body && body.memberId) || '');
+    const key = String(req.headers['x-ns-key'] || (body && body.memberKey) || '');
+    if (!id && !key) {
+      // 旧版 Android 原生分享/通知回复仍走令牌兼容通道；浏览器请求必须带成员身份。
+      const ua = String(req.headers['user-agent'] || '');
+      const legacy = /Android/i.test(ua) && !/Mozilla|Chrome|Safari/i.test(ua);
+      return legacy
+        ? { legacy: true, member: null, invalid: false }
+        : { legacy: false, member: null, invalid: true };
+    }
+    const member = this.room.auth(id, key);
+    return { legacy: false, member, invalid: !member };
+  }
+
+  /** 消息里 @ 到的成员。先把名字按长度倒序，避免「张三丰」被「张三」截胡。 */
+  mentionsFor(text, authorId) {
+    const value = String(text || '');
+    if (!value.includes('@')) return [];
+    const people = [this.room.host, ...Object.values(this.room.data.members)]
+      .filter((m) => m && m.id !== authorId)
+      .sort((a, b) => b.name.length - a.name.length);
+    const out = [];
+    for (const person of people) {
+      if (out.length >= 32) break;
+      const re = new RegExp('@' + escapeRe(person.name) + '(?![\\p{L}\\p{N}_])', 'u');
+      if (re.test(value)) out.push(person.id === 'host' ? 'host' : person.id);
+    }
+    return out;
+  }
+
+
   // ---------- routing ----------
 
   async route(req, res) {
@@ -284,14 +521,30 @@ class LanServer extends EventEmitter {
 
     try {
       if (p === '/api/history' && req.method === 'GET') {
+        const snapshot = this.rosterPayload();
         return json(res, 200, {
           ok: true,
           app: 'nearsend',
           version: this.core.version || '',
           host: os.hostname(),
-          messages: this.core.history(),
+          messages: this.core.history().map((m) => this.publicMessage(m)),
           theme: this.core.getTheme(),
           url: this.core.getUrl(),
+          room: snapshot.room,
+          members: snapshot.members,
+        });
+      }
+
+      if (p === '/api/room' && req.method === 'GET') {
+        const snapshot = this.rosterPayload();
+        const invite = await this.invite();
+        return json(res, 200, {
+          ok: true,
+          app: 'nearsend',
+          version: this.core.version || '',
+          room: snapshot.room,
+          members: snapshot.members,
+          invite: invite || null,
         });
       }
 
@@ -300,10 +553,15 @@ class LanServer extends EventEmitter {
         const meta = JSON.parse(body.toString('utf8') || '{}');
         const value = String(meta.text || '').trim();
         if (!value) return json(res, 400, { error: 'text required' });
+        const auth = this.authHttp(req, meta);
+        if (auth.invalid) return json(res, 401, { error: 'unauthorized member' });
+        const member = auth.member;
+        const author = member ? this.authorOf(member) : this.legacyAuthor(req);
+        const uid = member ? member.id : 'legacy';
         const cid = String(meta.cid || '');
         if (cid) {
           this.seenCid(cid);
-          const dup = this.findBySrc(cid);
+          const dup = this.findBySrc(cid, uid);
           if (dup) {
             // 重发同一条：把已落库的那条带回去，手机才能把本地气泡换成正式消息
             return json(res, 200, { ok: true, duplicate: true, id: dup.id, msg: dup });
@@ -311,24 +569,31 @@ class LanServer extends EventEmitter {
         }
         const msg = this.core.publish({
           from: 'phone',
+          uid,
+          author,
           src: cid || ('api' + Date.now().toString(36)),
           kind: 'text',
           text: value.slice(0, 20000),
+          mentions: this.mentionsFor(value, uid),
           reply: this.cleanReply(meta.reply),
         });
         return json(res, 200, { ok: true, id: msg.id, msg });
       }
 
       if (p === '/api/clear' && req.method === 'POST') {
-        if (this.uploads.abortAll) this.uploads.abortAll();
-        this.core.clear();
-        return json(res, 200, { ok: true });
+        // 群聊历史是共享的，清空只允许群主在桌面端操作。这里不再接受远程调用。
+        return json(res, 403, { error: 'host only' });
       }
 
       if (p === '/api/upload/init' && req.method === 'POST') {
         const body = await readBody(req, 64 * 1024);
         const meta = JSON.parse(body.toString('utf8') || '{}');
         if (!meta.name) return json(res, 400, { error: 'name required' });
+        const auth = this.authHttp(req, meta);
+        if (auth.invalid) return json(res, 401, { error: 'unauthorized member' });
+        const member = auth.member;
+        const author = member ? this.authorOf(member) : this.legacyAuthor(req);
+        const uid = member ? member.id : 'legacy';
         const size = Number(meta.size) || 0;
         // mime 会进 HTTP 响应头；清掉换行/控制字符，防止写头失败或头注入
         const mime = typeof meta.mime === 'string'
@@ -338,6 +603,8 @@ class LanServer extends EventEmitter {
         this.core.publish({
           id: session.id,
           from: 'phone',
+          uid,
+          author,
           src: String(meta.cid || ''),
           kind: kindOf(mime, session.name),
           name: session.name,
@@ -384,9 +651,13 @@ class LanServer extends EventEmitter {
 
       const recallMatch = p.match(/^\/api\/msg\/([a-f0-9]{16})\/recall$/);
       if (recallMatch && req.method === 'POST') {
+        const auth = this.authHttp(req, null);
+        if (auth.invalid) return json(res, 401, { ok: false, error: 'unauthorized member' });
         const msg = this.core.get(recallMatch[1]);
         if (!msg) return json(res, 404, { ok: false, error: 'not found' });
-        const can = msg.from === 'phone' && msg.status === 'ok' && !msg.recalled
+        const uid = msg.uid || (msg.from === 'pc' ? 'host' : 'legacy');
+        const mine = auth.member ? uid === auth.member.id : (msg.from === 'phone' && uid === 'legacy');
+        const can = mine && msg.status === 'ok' && !msg.recalled
           && Date.now() - Number(msg.ts || 0) <= RECALL_MS;
         if (!can) return json(res, 403, { ok: false, error: 'recall not allowed' });
         this.core.patch(msg.id, { recalled: true }, true);
@@ -395,6 +666,14 @@ class LanServer extends EventEmitter {
 
       const delMatch = p.match(/^\/api\/msg\/([a-f0-9]{16})$/);
       if (delMatch && req.method === 'DELETE') {
+        const auth = this.authHttp(req, null);
+        if (auth.invalid) return json(res, 401, { ok: false, error: 'unauthorized member' });
+        const msg = this.core.get(delMatch[1]);
+        if (!msg) return json(res, 404, { ok: false });
+        const uid = msg.uid || (msg.from === 'pc' ? 'host' : 'legacy');
+        const mine = auth.member ? uid === auth.member.id : (msg.from === 'phone' && uid === 'legacy');
+        // 群主通过 IPC 删除任意消息，不走这个接口；这里只允许删自己的
+        if (!mine) return json(res, 403, { ok: false, error: 'delete not allowed' });
         const purge = url.searchParams.get('purge') === '1';
         // 删除的如果是正在上传的消息，顺手结束上传会话，避免文件继续落盘却没人认领
         this.uploads.abort(delMatch[1]);
@@ -567,12 +846,16 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
     }
     req.socket.setNoDelay(true);
     this.wss.handleUpgrade(req, socket, head, (ws) => {
-      const device = deviceLabel(req.headers['user-agent'] || '');
+      const ua = req.headers['user-agent'] || '';
+      const device = deviceLabel(ua);
       const client = {
         id: crypto.randomBytes(4).toString('hex'),
         ws,
         device,
+        kind: deviceKind(ua),
         alive: true,
+        member: null,
+        typing: false,
         ip: (req.socket.remoteAddress || '').replace('::ffff:', ''),
       };
       this.clients.add(client);
@@ -588,20 +871,27 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
       });
       ws.on('close', () => {
         this.clients.delete(client);
-        this.broadcastPresence();
+        if (client.member) {
+          if (client.typing) {
+            const member = client.member;
+            this.broadcast({ t: 'typing', id: member.id, name: member.name, on: false });
+            this.emit('typing', { member: { id: member.id, name: member.name }, on: false });
+          }
+          this.room.touch(client.member.id);
+          this.broadcastRoom();
+        }
       });
       ws.on('error', () => {});
+      const snapshot = this.rosterPayload();
       this.send(ws, {
-        t: 'init',
-        id: client.id,
-        host: os.hostname(),
+        t: 'ready',
         app: 'nearsend',
         version: this.core.version || '',
-        messages: this.core.history(),
-        theme: this.core.getTheme(),
+        host: os.hostname(),
         url: this.core.getUrl(),
+        room: snapshot.room,
+        members: snapshot.members,
       });
-      this.broadcastPresence();
     });
   }
 
@@ -612,6 +902,25 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
     } catch {
       return;
     }
+
+    if (data.t === 'hello') {
+      this.joinClient(client, data);
+      return;
+    }
+    if (data.t === 'ping') {
+      this.send(client.ws, { t: 'pong', at: data.at || Date.now() });
+      return;
+    }
+    // 旧版 Android 后台只读连接不发 hello；它们只收 msg 广播，不参与群成员
+    if (!client.member) {
+      if (data.t === 'text') {
+        this.send(client.ws, { t: 'ack', cid: String(data.cid || ''), id: '', error: 'no identity' });
+      }
+      return;
+    }
+
+    const member = client.member;
+
     if (data.t === 'text') {
       const value = String(data.text || '').trim();
       const cid = String(data.cid || '');
@@ -623,7 +932,7 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
       // 否则气泡会永远停在「待发送」
       if (cid) {
         this.seenCid(cid);
-        const dup = this.findBySrc(cid);
+        const dup = this.findBySrc(cid, member.id);
         if (dup) {
           this.send(client.ws, { t: 'msg', msg: dup });
           this.send(client.ws, { t: 'ack', cid, id: dup.id, duplicate: true, msg: dup });
@@ -632,40 +941,132 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
       }
       const msg = this.core.publish({
         from: 'phone',
+        uid: member.id,
+        author: this.authorOf(member),
         src: cid || client.id,
         kind: 'text',
         text: value.slice(0, 20000),
+        mentions: this.mentionsFor(value, member.id),
         reply: this.cleanReply(data.reply),
       });
       this.send(client.ws, { t: 'ack', cid: cid || client.id, id: msg.id, msg });
       return;
     }
-    if (data.t === 'ping') {
-      this.send(client.ws, { t: 'pong', at: data.at || Date.now() });
-      return;
-    }
+
     if (data.t === 'typing') {
-      this.emit('typing', { device: client.device, on: !!data.on });
+      client.typing = !!data.on;
+      const frame = { t: 'typing', id: member.id, name: member.name, on: !!data.on };
+      for (const c of this.clients) {
+        if (c.member && c.ws.readyState === 1) this.send(c.ws, frame);
+      }
+      this.emit('typing', { member: { id: member.id, name: member.name }, on: !!data.on });
       return;
     }
+
+    if (data.t === 'seen' && Array.isArray(data.ids)) {
+      this.markSeen(member.id, data.ids);
+      return;
+    }
+
     if (data.t === 'delete' && typeof data.id === 'string') {
-      // 和 HTTP DELETE 保持一致：删除上传中的消息时结束上传会话
+      const msg = this.core.get(data.id);
+      if (!this.canEditMessage(msg, member)) {
+        this.send(client.ws, { t: 'error', code: 'delete', message: '只能删除自己的消息' });
+        return;
+      }
       this.uploads.abort(data.id);
       this.lastProgress.delete(data.id);
       this.core.remove(data.id, false);
       return;
     }
-    if (data.t === 'seen' && Array.isArray(data.ids)) {
-      const now = Date.now();
-      for (const id of data.ids.slice(0, 200)) {
-        const msg = this.core.get(id);
-        if (msg && msg.from === 'pc' && !msg.seen) this.core.patch(id, { seen: now }, true);
+
+    if (data.t === 'recall' && typeof data.id === 'string') {
+      const msg = this.core.get(data.id);
+      const can = this.canEditMessage(msg, member) && msg.status === 'ok' && !msg.recalled
+        && Date.now() - Number(msg.ts || 0) <= RECALL_MS;
+      if (!can) {
+        this.send(client.ws, { t: 'error', code: 'recall', message: '撤回失败' });
+        return;
+      }
+      this.core.patch(msg.id, { recalled: true }, true);
+      return;
+    }
+
+    if (data.t === 'rename') {
+      try {
+        const result = this.renameMember(member.id, data.name);
+        client.member = result.member;
+        this.send(client.ws, { t: 'me', me: this.room.publicMember(result.member, true, false) });
+      } catch (err) {
+        this.send(client.ws, { t: 'error', code: err.code || 'rename', message: err.message });
       }
       return;
     }
-    if (data.t === 'theme' && (data.theme === 'dark' || data.theme === 'light')) {
-      this.core.setTheme(data.theme);
+
+    if (data.t === 'leave') {
+      const leaving = this.room.leave(member.id);
+      if (leaving) {
+        this.publishSystem(`${leaving.name} 退出了群聊`, {
+          event: 'leave',
+          target: { id: leaving.id, name: leaving.name },
+        });
+      }
+      for (const c of [...this.clients]) {
+        if (!c.member || c.member.id !== member.id) continue;
+        c.member = null;
+        this.send(c.ws, { t: 'left' });
+        try {
+          c.ws.close(4004, 'left');
+        } catch {
+          /* ignore */
+        }
+      }
+      this.broadcastRoom();
     }
+  }
+
+  joinClient(client, data) {
+    if (client.member) return;
+    const profile = data.member && typeof data.member === 'object' ? data.member : {};
+    let result;
+    try {
+      result = this.room.join(profile, { locked: this.room.data.locked });
+    } catch (err) {
+      this.send(client.ws, {
+        t: 'denied',
+        code: err.code || 'identity',
+        message: err.message || '无法加入群聊',
+      });
+      return;
+    }
+
+    client.member = result.member;
+    client.kind = result.member.kind;
+    const snapshot = this.rosterPayload();
+    const me = this.room.publicMember(result.member, true, false);
+    if (result.key) me.key = result.key;
+    this.send(client.ws, {
+      t: 'welcome',
+      me,
+      room: snapshot.room,
+      members: snapshot.members,
+      messages: this.core.history().map((m) => this.publicMessage(m)),
+      url: this.core.getUrl(),
+      serverTime: Date.now(),
+    });
+    this.broadcastRoom();
+    if (result.created) {
+      this.publishSystem(`${result.member.name} 加入了群聊`, {
+        event: 'join',
+        actor: { id: result.member.id, name: result.member.name },
+      });
+    }
+  }
+
+  canEditMessage(msg, member) {
+    if (!msg || !member || msg.kind === 'system') return false;
+    const uid = msg.uid || (msg.from === 'pc' ? 'host' : 'legacy');
+    return uid === member.id;
   }
 
   send(ws, obj) {
@@ -677,13 +1078,15 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
     }
   }
 
-  /** 按手机端的 cid 找回已经落库的那条文字消息 */
-  findBySrc(cid) {
+  /** 按客户端的 cid 找回已经落库的那条文字消息 */
+  findBySrc(cid, uid) {
     if (!cid) return null;
     const list = this.core.history();
     for (let i = list.length - 1; i >= 0; i -= 1) {
       const m = list[i];
-      if (m && m.src === cid && m.kind === 'text' && m.status === 'ok' && !m.recalled) return m;
+      if (!m || m.src !== cid || m.kind !== 'text' || m.status !== 'ok' || m.recalled) continue;
+      if (uid && m.uid && m.uid !== uid) continue;
+      return m;
     }
     return null;
   }
@@ -701,23 +1104,64 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
     return false;
   }
 
-  /** 只接受引用消息的展示所需字段，避免手机端塞任意结构进来 */
+  /**
+   * 引用信息以落库的原文为准，避免客户端伪造作者或原文。
+   * 原文被删除时退回客户端给的展示字段。
+   */
   cleanReply(reply) {
     if (!reply || typeof reply !== 'object') return undefined;
     const id = String(reply.id || '');
     if (!id || id.length > 64) return undefined;
-    const out = {
-      id,
-      from: reply.from === 'pc' ? 'pc' : 'phone',
-      kind: reply.kind === 'image' ? 'image' : reply.kind === 'file' ? 'file' : 'text',
-    };
-    if (out.kind === 'text') out.text = String(reply.text || '').slice(0, 200);
-    else out.name = String(reply.name || '').slice(0, 200);
+    const src = this.core.get(id);
+    const out = { id };
+    if (src) {
+      out.from = src.from === 'pc' ? 'pc' : 'phone';
+      out.uid = src.uid || '';
+      out.kind = src.kind === 'image' ? 'image' : src.kind === 'file' ? 'file' : 'text';
+      if (src.author) {
+        out.author = {
+          id: String(src.author.id || '').slice(0, 32),
+          name: plainName(src.author.name, '成员'),
+          color: /^[a-z]{3,12}$/.test(String(src.author.color || '')) ? src.author.color : 'slate',
+          kind: src.author.kind === 'phone' || src.author.kind === 'tablet' ? src.author.kind : 'desktop',
+        };
+      }
+    } else {
+      out.from = reply.from === 'pc' ? 'pc' : 'phone';
+      out.uid = String(reply.uid || '').slice(0, 32);
+      out.kind = reply.kind === 'image' ? 'image' : reply.kind === 'file' ? 'file' : 'text';
+      if (reply.author && typeof reply.author === 'object') {
+        out.author = {
+          id: String(reply.author.id || '').slice(0, 32),
+          name: plainName(reply.author.name, '成员'),
+          color: /^[a-z]{3,12}$/.test(String(reply.author.color || '')) ? reply.author.color : 'slate',
+          kind: reply.author.kind === 'phone' || reply.author.kind === 'tablet' ? reply.author.kind : 'desktop',
+        };
+      }
+    }
+    if (out.kind === 'text') out.text = String(src ? src.text : (reply.text || '')).slice(0, 200);
+    else out.name = String(src ? src.name : (reply.name || '')).slice(0, 200);
     return out;
   }
 
+  /** 文件在本机的绝对路径只给桌面端；网页成员拿到 id 后走 /d/ 下载 */
+  publicMessage(msg) {
+    if (!msg || typeof msg !== 'object' || !msg.path) return msg;
+    const copy = Object.assign({}, msg);
+    delete copy.path;
+    return copy;
+  }
+
   broadcast(obj) {
-    const payload = JSON.stringify(obj);
+    let out = obj;
+    if (obj && obj.t === 'msg' && obj.msg) {
+      out = Object.assign({}, obj, { msg: this.publicMessage(obj.msg) });
+    } else if (obj && obj.t === 'msg:update' && obj.patch && obj.patch.path) {
+      const patch = Object.assign({}, obj.patch);
+      delete patch.path;
+      out = Object.assign({}, obj, { patch });
+    }
+    const payload = JSON.stringify(out);
     for (const c of this.clients) {
       if (c.ws.readyState !== 1) continue;
       try {
@@ -726,12 +1170,6 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
         /* 单个连接失败不影响其他设备 */
       }
     }
-  }
-
-  broadcastPresence() {
-    const devices = [...this.clients].map((c) => c.device);
-    this.broadcast({ t: 'presence', n: this.clients.size, devices });
-    this.emit('presence', devices);
   }
 
   onProgress({ id, offset, size }) {

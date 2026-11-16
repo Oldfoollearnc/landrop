@@ -41,6 +41,17 @@ let soundOn = true;
 let currentUrl = '';
 let currentQr = '';
 let devices = [];
+let room = { name: '近传群聊', host: { id: 'host', name: '我的电脑', color: 'sky', kind: 'desktop' }, onlineCount: 1, memberCount: 1 };
+let members = [];
+let blocked = [];
+let me = { id: 'host', name: '我的电脑', color: 'sky', kind: 'desktop' };
+let sideOpen = false;
+let lastOnlineIds = new Set();
+const typingMap = new Map();
+let promptResolve = null;
+let replyTo = null;
+const mentionState = { open: false, items: [], index: 0, start: -1 };
+const COLORS = ['sky', 'mint', 'amber', 'rose', 'violet', 'lime', 'coral', 'slate'];
 let loaded = [];
 const byId = new Map();
 const nodes = new Map();
@@ -70,6 +81,61 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
   ));
+}
+
+// ---------- 群成员 ----------
+
+function memberById(id) {
+  return members.find((m) => m && m.id === id) || null;
+}
+
+function authorOf(m) {
+  if (!m) return { id: '', name: '成员', color: 'slate', kind: 'phone', online: false };
+  const live = m.author && memberById(m.author.id);
+  if (live) return live;
+  if (m.author) return m.author;
+  if (m.uid === 'host' || m.from === 'pc') return room.host || me;
+  return { id: 'legacy', name: '成员', color: 'slate', kind: 'phone', online: false };
+}
+
+function isMine(m) {
+  if (!m) return false;
+  if (m.uid) return m.uid === 'host';
+  return m.from === 'pc';
+}
+
+function avatarEl(person, small) {
+  const el = document.createElement('span');
+  el.className = 'av' + (small ? ' sm' : '');
+  el.dataset.c = person && person.color ? person.color : 'slate';
+  const chars = Array.from(String((person && person.name) || '?'));
+  el.textContent = chars.length ? chars[0] : '?';
+  return el;
+}
+
+function readCount(m) {
+  if (!m) return 0;
+  if (Array.isArray(m.seenBy)) return m.seenBy.length;
+  return m.seen ? 1 : 0;
+}
+
+function readByMe(m) {
+  if (!m) return false;
+  return Array.isArray(m.seenBy) ? m.seenBy.includes('host') : !!m.seen;
+}
+
+function kindLabel(kind) {
+  return kind === 'phone' ? '手机' : kind === 'tablet' ? '平板' : '电脑';
+}
+
+function lastSeenText(ts) {
+  const diff = Date.now() - Number(ts || 0);
+  if (!ts || diff < 0) return '离线';
+  if (diff < 60e3) return '刚刚在线';
+  if (diff < 3600e3) return Math.floor(diff / 60e3) + ' 分钟前';
+  if (diff < 86400e3) return Math.floor(diff / 3600e3) + ' 小时前';
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
 function fmtSize(n) {
@@ -173,21 +239,39 @@ function play(name) {
 function hideTyping() {
   const el = $('typing');
   if (el) el.hidden = true;
+  typingMap.clear();
   clearTimeout(typingHideTimer);
   typingHideTimer = null;
 }
 
-function showTyping(on) {
+function renderTyping() {
+  const now = Date.now();
+  for (const [id, item] of typingMap) {
+    if (!item || item.until <= now) typingMap.delete(id);
+  }
   const el = $('typing');
   if (!el) return;
   clearTimeout(typingHideTimer);
   typingHideTimer = null;
-  if (!on || !devices.length) {
+  const names = [...typingMap.values()].map((x) => x.name).filter(Boolean);
+  if (!names.length) {
     el.hidden = true;
     return;
   }
   el.hidden = false;
-  typingHideTimer = setTimeout(hideTyping, 4000);
+  $('typingText').textContent = names.length === 1
+    ? `${names[0]} 正在输入`
+    : names.length === 2
+      ? `${names[0]}、${names[1]} 正在输入`
+      : `${names.length} 人正在输入`;
+  typingHideTimer = setTimeout(renderTyping, 1600);
+}
+
+function setTyping(id, name, on) {
+  if (!id) return;
+  if (on) typingMap.set(id, { name: name || '成员', until: Date.now() + 5000 });
+  else typingMap.delete(id);
+  renderTyping();
 }
 
 function sendTyping(on) {
@@ -209,9 +293,12 @@ function sendTyping(on) {
 // ---------- 视图 ----------
 
 function matchQuery(m, q) {
-  return !!q && !m.recalled && !!(
+  if (!q || m.recalled || m.kind === 'system') return false;
+  const who = authorOf(m);
+  return !!(
     (m.text && m.text.toLowerCase().includes(q))
     || (m.name && m.name.toLowerCase().includes(q))
+    || (who && who.name && who.name.toLowerCase().includes(q))
   );
 }
 
@@ -223,8 +310,7 @@ function currentList() {
 
 function updateChrome() {
   const inSettings = view === 'settings';
-  const inConnect = view === 'connect';
-  $('brand').hidden = inSettings || inConnect;
+  $('brand').hidden = inSettings;
   $('tbTitle').hidden = !inSettings;
   $('btnBack').hidden = !inSettings;
   // 设置入口在两种尺寸、所有视图都保留；已在设置页时不需要重复入口
@@ -240,22 +326,300 @@ function setView(next) {
   }
   view = next;
   appEl.dataset.view = next;
-  if (next !== 'chat') closeEmoji();
+  if (next !== 'chat') {
+    closeEmoji();
+    closeSide();
+  }
   updateChrome();
   if (next === 'chat') renderAll(currentList());
   if (next === 'settings') fillSettings();
 }
 
 function targetView() {
-  return (!loaded.length && !devices.length) ? 'connect' : 'chat';
+  const hasChat = loaded.some((m) => m.kind !== 'system');
+  return (!hasChat && !devices.length) ? 'connect' : 'chat';
 }
 
 function syncView() {
   if (view === 'settings') return;
   const next = targetView();
-  appEl.classList.toggle('offline', devices.length === 0 && loaded.length > 0);
+  const hasChat = loaded.some((m) => m.kind !== 'system');
+  appEl.classList.toggle('offline', devices.length === 0 && hasChat);
   if (next !== view) setView(next);
 }
+
+// ---------- 群聊外壳 ----------
+
+let roomReady = false;
+
+function applyRoomPayload(p, initial) {
+  if (!p) return;
+  if (p.room) room = p.room;
+  if (Array.isArray(p.members)) members = p.members;
+  if (Array.isArray(p.blocked)) blocked = p.blocked;
+  me = Object.assign({ id: 'host', kind: 'desktop' }, room.host || me);
+  devices = members.filter((m) => m.online && !m.isHost).map((m) => m.name);
+  if (!devices.length) hideTyping();
+
+  const nextOnline = new Set(members.filter((m) => m.online).map((m) => m.id));
+  let incoming = [];
+  if (roomReady && !initial) {
+    incoming = [...nextOnline].filter((id) => !lastOnlineIds.has(id) && id !== 'host');
+  }
+  lastOnlineIds = nextOnline;
+
+  updateChrome();
+  renderRoomBar();
+  renderRoomSide();
+  if (view === 'settings') fillSettings();
+  const hasChat = loaded.some((m) => m.kind !== 'system');
+  appEl.classList.toggle('offline', devices.length === 0 && hasChat);
+  if (!devices.length) {
+    $('cbarText').textContent = hasChat ? '还没有其他成员在线' : '扫码邀请成员加入';
+  }
+  syncView();
+
+  if (incoming.length) {
+    const first = memberById(incoming[0]);
+    const name = (first && first.name) || '新成员';
+    if (view === 'connect') {
+      playConnect(name);
+    } else if (Date.now() - lastConnectAt > 15000) {
+      play('connect');
+      toast(`${name} 加入了群聊`);
+      pulseDot();
+      lastConnectAt = Date.now();
+    }
+  }
+  roomReady = true;
+}
+
+function renderRoomBar() {
+  if (!$('rbName')) return;
+  $('rbName').textContent = room.name || '近传群聊';
+  const total = room.memberCount || members.length || 1;
+  const online = room.onlineCount || members.filter((m) => m.online).length || 1;
+  $('rbSub').textContent = `${online} 人在线${online < total ? ` · ${total} 位成员` : ''}${room.locked ? ' · 已锁定' : ''}`;
+  const stack = $('rbStack');
+  stack.textContent = '';
+  const onlineList = members.filter((m) => m && m.online);
+  for (const m of onlineList.slice(0, 3)) stack.appendChild(avatarEl(m, true));
+  if (onlineList.length > 3) {
+    const more = document.createElement('span');
+    more.className = 'rbmore';
+    more.textContent = '+' + (onlineList.length - 3);
+    stack.appendChild(more);
+  }
+  stack.title = onlineList.map((m) => m.name).join('、');
+  $('qrRoom').textContent = room.name || '近传群聊';
+  $('setRoomName').textContent = room.name || '近传群聊';
+  $('setHostName').textContent = (room.host && room.host.name) || '我的电脑';
+  $('setRoomMeta').textContent = `${online} 人在线 · ${total} 位成员`;
+  $('setLock').classList.toggle('on', !!room.locked);
+  $('setLock').setAttribute('aria-checked', room.locked ? 'true' : 'false');
+}
+
+function sideMemberRow(m) {
+  const row = document.createElement('div');
+  row.className = 'rs-row' + (m.online ? ' on' : '');
+  row.appendChild(avatarEl(m));
+  const info = document.createElement('div');
+  info.className = 'rs-info';
+  const line = document.createElement('div');
+  line.className = 'rs-line';
+  const name = document.createElement('b');
+  name.textContent = m.name;
+  line.appendChild(name);
+  if (m.isHost) {
+    const b = document.createElement('i');
+    b.className = 'rs-badge host';
+    b.textContent = '群主';
+    line.appendChild(b);
+  }
+  info.appendChild(line);
+  const sub = document.createElement('span');
+  sub.className = 'rs-sub';
+  sub.textContent = m.isHost
+    ? '群主电脑 · 在线'
+    : m.online
+      ? `${kindLabel(m.kind)} · 在线`
+      : `${kindLabel(m.kind)} · ${lastSeenText(m.lastSeen)}`;
+  info.appendChild(sub);
+  row.appendChild(info);
+  const dot = document.createElement('span');
+  dot.className = 'rs-dot' + (m.online ? ' on' : '');
+  row.appendChild(dot);
+  row.addEventListener('click', () => {
+    const r = row.getBoundingClientRect();
+    const items = [];
+    if (m.isHost) {
+      items.push({ label: '修改我的昵称', run: () => renameHost() });
+    } else {
+      items.push({ label: '@ 提到他', run: () => insertMention(m.name) });
+      items.push({ label: '复制昵称', run: () => api.copyText(m.name) });
+      items.push({ sep: true });
+      items.push({ label: '移出群聊', danger: true, run: () => kickMember(m) });
+    }
+    openCtx(r.right, r.bottom, items);
+  });
+  return row;
+}
+
+function renderRoomSide() {
+  const body = $('rsBody');
+  if (!body) return;
+  body.textContent = '';
+
+  const card = document.createElement('div');
+  card.className = 'rs-card';
+  const mark = document.createElement('span');
+  mark.className = 'rs-mark';
+  mark.textContent = '群';
+  card.appendChild(mark);
+  const info = document.createElement('div');
+  const rn = document.createElement('b');
+  rn.textContent = room.name || '近传群聊';
+  const rs = document.createElement('span');
+  rs.textContent = `${room.onlineCount || 1} 人在线 · ${room.memberCount || 1} 位成员`;
+  info.appendChild(rn);
+  info.appendChild(rs);
+  card.appendChild(info);
+  body.appendChild(card);
+
+  const invite = document.createElement('div');
+  invite.className = 'rs-invite';
+  if (currentQr) {
+    const img = document.createElement('img');
+    img.src = currentQr;
+    img.alt = '邀请二维码';
+    invite.appendChild(img);
+    const tip = document.createElement('span');
+    tip.textContent = '扫码加入群聊';
+    invite.appendChild(tip);
+    const copy = document.createElement('button');
+    copy.className = 'rs-copy';
+    copy.textContent = '复制邀请链接';
+    copy.addEventListener('click', () => {
+      api.copyText(currentUrl);
+      toast('邀请链接已复制');
+    });
+    invite.appendChild(copy);
+  } else {
+    const tip = document.createElement('span');
+    tip.textContent = '正在生成邀请二维码…';
+    invite.appendChild(tip);
+  }
+  body.appendChild(invite);
+
+  const online = members.filter((m) => m && m.online);
+  const offline = members.filter((m) => m && !m.online);
+  const section = (title, list) => {
+    if (!list.length) return;
+    const h = document.createElement('div');
+    h.className = 'rs-sec';
+    h.textContent = `${title} · ${list.length}`;
+    body.appendChild(h);
+    for (const m of list) body.appendChild(sideMemberRow(m));
+  };
+  section('在线', online);
+  section('离线', offline);
+
+  if (blocked.length) {
+    const h = document.createElement('div');
+    h.className = 'rs-sec';
+    h.textContent = `已移出 · ${blocked.length}`;
+    body.appendChild(h);
+    for (const b of blocked) {
+      const row = document.createElement('div');
+      row.className = 'rs-row banned';
+      const name = document.createElement('span');
+      name.className = 'rs-banned';
+      name.textContent = b.name;
+      row.appendChild(name);
+      const btn = document.createElement('button');
+      btn.className = 'rs-restore';
+      btn.textContent = '恢复';
+      btn.addEventListener('click', async () => {
+        const p = await api.roomUnblock(b.id);
+        applyRoomPayload(p);
+        toast(`${b.name} 可以重新加入了`);
+      });
+      row.appendChild(btn);
+      body.appendChild(row);
+    }
+  }
+}
+
+function openSide() {
+  sideOpen = true;
+  appEl.classList.add('side-open');
+  if (appEl.dataset.mode === 'compact') $('sideScrim').hidden = false;
+  renderRoomSide();
+}
+
+function closeSide() {
+  sideOpen = false;
+  appEl.classList.remove('side-open');
+  $('sideScrim').hidden = true;
+}
+
+function toggleSide() {
+  if (sideOpen) closeSide();
+  else openSide();
+}
+
+async function kickMember(m) {
+  const ok = await askConfirm(`把「${m.name}」移出群聊？对方可以换新身份重新加入。`, '移出');
+  if (!ok) return;
+  const p = await api.roomKick(m.id);
+  applyRoomPayload(p);
+  toast(`${m.name} 已被移出`);
+}
+
+async function renameHost() {
+  const name = await openPrompt('我的昵称', (room.host && room.host.name) || '我的电脑', 16);
+  if (!name) return;
+  const p = await api.roomHostName(name);
+  applyRoomPayload(p);
+}
+
+async function openPrompt(title, value, maxLength) {
+  $('promptTitle').textContent = title;
+  const inputEl = $('promptInput');
+  inputEl.maxLength = maxLength || 24;
+  inputEl.value = value || '';
+  $('promptWrap').hidden = false;
+  return new Promise((resolve) => {
+    promptResolve = resolve;
+    setTimeout(() => {
+      inputEl.focus();
+      inputEl.select();
+    }, 40);
+  });
+}
+
+function closePrompt(value) {
+  $('promptWrap').hidden = true;
+  const resolve = promptResolve;
+  promptResolve = null;
+  if (resolve) resolve(value == null ? null : String(value));
+}
+
+async function openInvite() {
+  $('inviteWrap').hidden = false;
+  $('inviteQr').removeAttribute('src');
+  if (!currentQr) {
+    const inv = await api.roomInvite();
+    if (inv && inv.qr) {
+      currentQr = inv.qr;
+      currentUrl = inv.url || currentUrl;
+      applyUrl(currentUrl, currentQr);
+    }
+  }
+  $('inviteQr').src = currentQr || '';
+  $('inviteUrl').textContent = currentUrl || '';
+}
+
 
 // ---------- 连接动画 ----------
 
@@ -270,7 +634,7 @@ function pulseDot() {
 
 function playConnect(name) {
   const flash = $('flash');
-  $('flashName').textContent = `${name} 已连接`;
+  $('flashName').textContent = `${name} 加入了群聊`;
   flash.classList.add('show');
   void flash.offsetHeight;
   flash.classList.add('on');
@@ -378,20 +742,74 @@ function pickEl() {
   return span;
 }
 
-function messageEl(m) {
+function escapeRe(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function richText(text) {
+  const frag = document.createDocumentFragment();
+  const value = String(text || '');
+  const names = members.map((m) => m && m.name).filter(Boolean).sort((a, b) => b.length - a.length);
+  if (!value.includes('@') || !names.length) {
+    frag.appendChild(document.createTextNode(value));
+    return frag;
+  }
+  const re = new RegExp('@(' + names.map(escapeRe).join('|') + ')(?![\\p{L}\\p{N}_])', 'gu');
+  let last = 0;
+  let hit;
+  while ((hit = re.exec(value))) {
+    if (hit.index > last) frag.appendChild(document.createTextNode(value.slice(last, hit.index)));
+    const span = document.createElement('span');
+    span.className = 'at' + (hit[1] === me.name ? ' me' : '');
+    span.textContent = '@' + hit[1];
+    frag.appendChild(span);
+    last = hit.index + hit[0].length;
+  }
+  if (last < value.length) frag.appendChild(document.createTextNode(value.slice(last)));
+  return frag;
+}
+
+function messageEl(m, cont) {
   const row = document.createElement('div');
-  row.className = 'msg ' + (m.from === 'pc' ? 'pc' : 'phone');
   row.dataset.id = m.id;
   if (m.status === 'error') row.classList.add('failed');
   if (multiMode && picked.has(m.id)) row.classList.add('picked');
 
-  if (m.recalled) {
-    row.classList.add('sys');
+  if (m.kind === 'system') {
+    row.className = 'msg sys';
     const tip = document.createElement('span');
-    tip.textContent = m.from === 'pc' ? '你撤回了一条消息' : '对方撤回了一条消息';
+    tip.textContent = m.text || '';
     row.appendChild(tip);
     if (multiMode) row.appendChild(pickEl());
     return row;
+  }
+
+  const out = isMine(m);
+  const who = authorOf(m);
+  row.className = 'msg ' + (out ? 'pc' : 'phone') + (cont ? ' cont' : '');
+
+  if (m.recalled) {
+    row.classList.add('sys');
+    const tip = document.createElement('span');
+    tip.textContent = out ? '你撤回了一条消息' : `${who.name} 撤回了一条消息`;
+    row.appendChild(tip);
+    if (multiMode) row.appendChild(pickEl());
+    return row;
+  }
+
+  const mcol = document.createElement('div');
+  mcol.className = 'mcol';
+  if (!out) {
+    const av = avatarEl(who);
+    if (cont) av.classList.add('gone');
+    row.appendChild(av);
+    if (!cont) {
+      const name = document.createElement('span');
+      name.className = 'who';
+      name.dataset.c = who.color || 'slate';
+      name.textContent = who.name;
+      mcol.appendChild(name);
+    }
   }
 
   const b = document.createElement('div');
@@ -400,19 +818,27 @@ function messageEl(m) {
   if (m.reply) {
     const q = document.createElement('div');
     q.className = 'quote';
-    const who = m.reply.from === 'pc' ? '我' : '手机';
+    const rwho = (m.reply.author && m.reply.author.name)
+      || (m.reply.uid === 'host' ? room.host.name : '')
+      || (m.reply.from === 'pc' ? room.host.name : '成员');
     const body = m.reply.text
       || (m.reply.kind === 'image' ? '[图片]' : '[文件] ' + (m.reply.name || ''));
-    q.textContent = `${who}：${body}`;
+    q.textContent = `${m.reply.uid === 'host' ? '我' : rwho}：${body}`;
+    q.addEventListener('click', (e) => {
+      e.stopPropagation();
+      jumpToMessage(m.reply.id);
+    });
     b.appendChild(q);
   }
 
   if (m.kind === 'text') {
-    b.textContent = m.text || '';
+    b.appendChild(richText(m.text));
     b.title = fmtTime(m.ts);
-    if (m.from === 'pc' && m.status === 'ok') {
+    if (out && m.status === 'ok') {
       const t = document.createElement('span');
-      t.className = 'tick' + (m.seen ? ' seen' : '');
+      const n = readCount(m);
+      t.className = 'tick' + (n ? ' seen' : '');
+      t.title = n ? `${n} 人已读` : '已送达';
       t.innerHTML = TICK;
       b.appendChild(t);
     }
@@ -470,7 +896,11 @@ function messageEl(m) {
     if (m.status === 'uploading') b.appendChild(progressEl(m));
   }
 
-  row.appendChild(b);
+  const bwrap = document.createElement('div');
+  bwrap.className = 'bwrap';
+  bwrap.appendChild(b);
+  mcol.appendChild(bwrap);
+  row.appendChild(mcol);
   if (multiMode) row.appendChild(pickEl());
   else row.appendChild(toolsEl(m));
   return row;
@@ -481,7 +911,7 @@ function chatEmpty(isSearch) {
   d.className = 'chat-empty' + (isSearch ? ' results' : '');
   d.innerHTML = isSearch
     ? '<b>没有匹配的消息</b>换个关键词试试'
-    : '<b>还没有消息</b>在手机上发送文字、图片或文件';
+    : '<b>群聊已就绪</b>发一条消息，或扫码邀请手机和其他电脑加入';
   return d;
 }
 
@@ -527,25 +957,26 @@ function addSeparator(ts) {
 
 function appendMessage(m) {
   const wasNear = nearBottom();
-  const tight = lastFrom === m.from && m.ts - lastTs < 180000;
+  const authorId = m.kind === 'system' ? '' : (m.uid || (m.from === 'pc' ? 'host' : 'legacy'));
+  const tight = !!authorId && lastFrom === authorId && m.ts - lastTs < 180000;
   addSeparator(m.ts);
-  const el = messageEl(m);
+  const el = messageEl(m, tight);
   if (!tight) el.classList.add('break');
   el.classList.add('enter');
   setTimeout(() => el.classList.remove('enter'), 280);
   chat.appendChild(el);
   nodes.set(m.id, el);
   byId.set(m.id, m);
-  lastFrom = m.from;
+  lastFrom = authorId;
 
   // 自己发出的消息无条件跟到底；对方消息只在本来就在底部时才跟随
-  if (m.from === 'pc' || wasNear) scrollBottom(true);
-  else if (!rendering) {
+  if (isMine(m) || wasNear) scrollBottom(true);
+  else if (!rendering && m.kind !== 'system') {
     pendingNew += 1;
     $('jumpCount').textContent = String(pendingNew);
     $('jumpPill').hidden = false;
   }
-  if (m.from === 'phone') markSeen();
+  if (!isMine(m) && m.kind !== 'system') markSeen();
   else if (!rendering) markWaitingDownload(m);
 }
 
@@ -555,7 +986,9 @@ function markSeen() {
   clearTimeout(seenTimer);
   seenTimer = setTimeout(() => {
     if (!devices.length) return;
-    const ids = loaded.filter((m) => m.from === 'phone' && m.status === 'ok' && !m.seen).map((m) => m.id);
+    const ids = loaded
+      .filter((m) => !isMine(m) && m.kind !== 'system' && m.status === 'ok' && !readByMe(m))
+      .map((m) => m.id);
     if (ids.length) api.markSeen(ids.slice(-300));
   }, 600);
 }
@@ -582,6 +1015,15 @@ function renderAll(list) {
   scrollBottom(true);
 }
 
+function authorKey(m) {
+  return m.kind === 'system' ? '' : (m.uid || (m.from === 'pc' ? 'host' : 'legacy'));
+}
+
+function isCont(m, prev) {
+  return !!(m && prev && m.kind !== 'system' && prev.kind !== 'system'
+    && authorKey(m) === authorKey(prev) && m.ts - prev.ts < 180000);
+}
+
 function patchMessage(id, patch) {
   const m = byId.get(id) || loaded.find((x) => x.id === id);
   if (!m) return;
@@ -592,16 +1034,24 @@ function patchMessage(id, patch) {
   const el = nodes.get(id);
   if (!el) return;
 
-  if ('seen' in patch) {
+  if ('seen' in patch || 'seenBy' in patch) {
     const t = el.querySelector('.tick');
-    if (t) t.classList.add('seen');
+    if (t) {
+      const n = readCount(m);
+      t.classList.toggle('seen', n > 0);
+      t.title = n ? `${n} 人已读` : '已送达';
+    }
     return;
   }
 
   const structural = 'path' in patch || 'recalled' in patch
     || (patch.status && patch.status !== 'uploading');
   if (structural) {
-    const fresh = messageEl(m);
+    const idx = loaded.findIndex((x) => x.id === id);
+    const prev = idx > 0 ? loaded[idx - 1] : null;
+    const cont = isCont(m, prev);
+    const fresh = messageEl(m, cont);
+    if (!cont) fresh.classList.add('break');
     el.replaceWith(fresh);
     nodes.set(id, fresh);
     return;
@@ -679,8 +1129,48 @@ $('lightbox').addEventListener('click', closeLightbox);
 // ---------- 消息操作 ----------
 
 function canRecall(m) {
-  return m.from === 'pc' && m.status === 'ok' && !m.recalled
+  return isMine(m) && m.status === 'ok' && !m.recalled
     && Date.now() - Number(m.ts || 0) <= RECALL_MS;
+}
+
+function jumpToMessage(id) {
+  const el = nodes.get(id);
+  if (!el) {
+    toast('这条消息不在当前记录里');
+    return;
+  }
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.remove('flash');
+  void el.offsetWidth;
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 1200);
+}
+
+function setReply(m) {
+  if (!m) return;
+  const who = authorOf(m);
+  replyTo = {
+    id: m.id,
+    from: m.from,
+    uid: m.uid || (m.from === 'pc' ? 'host' : ''),
+    author: who ? { id: who.id, name: who.name, color: who.color, kind: who.kind } : null,
+    kind: m.kind,
+    text: m.kind === 'text' ? String(m.text || '').slice(0, 120) : '',
+    name: m.name || '',
+  };
+  $('replyBar').hidden = false;
+  $('replyName').textContent = isMine(m) ? '回复我自己的消息' : '回复 ' + who.name;
+  $('replyText').textContent = m.kind === 'text'
+    ? String(m.text || '').slice(0, 60)
+    : m.kind === 'image'
+      ? '[图片]'
+      : '[文件] ' + (m.name || '');
+  input.focus();
+}
+
+function clearReply() {
+  replyTo = null;
+  $('replyBar').hidden = true;
 }
 
 async function handleAction(a, m) {
@@ -764,7 +1254,7 @@ chat.addEventListener('contextmenu', (e) => {
   if (!row || searchMode || multiMode) return;
   e.preventDefault();
   const m = byId.get(row.dataset.id);
-  if (!m) return;
+  if (!m || m.kind === 'system') return;
   const items = [];
   if (m.recalled) {
     items.push({ label: '多选', run: () => enterMulti(m.id) });
@@ -773,6 +1263,9 @@ chat.addEventListener('contextmenu', (e) => {
     return;
   }
   if (canRecall(m)) items.push({ label: '撤回', run: () => handleAction('recall', m) });
+  items.push({ label: '回复', run: () => setReply(m) });
+  const who = authorOf(m);
+  if (!isMine(m) && memberById(who.id)) items.push({ label: `@${who.name}`, run: () => insertMention(who.name) });
   if (m.kind === 'text') items.push({ label: '复制文字', run: () => handleAction('copy', m) });
   if (m.kind !== 'text' && m.path) {
     items.push({ label: '打开', run: () => handleAction('open', m) });
@@ -955,6 +1448,113 @@ function saveDraft() {
   }, 300);
 }
 
+function insertMention(name) {
+  if (!name) return;
+  const pos = input.selectionStart == null ? input.value.length : input.selectionStart;
+  const end = input.selectionEnd == null ? pos : input.selectionEnd;
+  const before = input.value.slice(0, pos);
+  const needSpace = before && !/\s$/.test(before) ? ' ' : '';
+  const text = `${needSpace}@${name} `;
+  input.value = before + text + input.value.slice(end);
+  const next = pos + text.length;
+  try {
+    input.setSelectionRange(next, next);
+  } catch {
+    /* ignore */
+  }
+  autoGrow();
+  updateSendState();
+  saveDraft();
+  if (sideOpen && appEl.dataset.mode === 'compact') closeSide();
+  input.focus();
+  sendTyping(true);
+}
+
+function closeMention() {
+  mentionState.open = false;
+  mentionState.items = [];
+  mentionState.start = -1;
+  $('mentionPop').hidden = true;
+}
+
+function updateMention() {
+  if (!input || input.selectionStart == null) return closeMention();
+  const pos = input.selectionStart;
+  const before = input.value.slice(0, pos);
+  const hit = /(^|[\s(])@([^\s@]{0,16})$/.exec(before);
+  if (!hit) return closeMention();
+  const q = hit[2].toLowerCase();
+  const items = members
+    .filter((m) => m && !m.isHost)
+    .filter((m) => !q || m.name.toLowerCase().includes(q))
+    .sort((a, b) => (a.online === b.online ? 0 : a.online ? -1 : 1))
+    .slice(0, 8);
+  if (!items.length) return closeMention();
+  mentionState.open = true;
+  mentionState.items = items;
+  mentionState.index = 0;
+  mentionState.start = pos - hit[2].length - 1;
+  renderMention();
+}
+
+function renderMention() {
+  const box = $('mentionPop');
+  if (!mentionState.open) {
+    box.hidden = true;
+    return;
+  }
+  box.textContent = '';
+  mentionState.items.forEach((m, i) => {
+    const btn = document.createElement('div');
+    btn.className = 'mitem' + (i === mentionState.index ? ' on' : '');
+    btn.setAttribute('role', 'button');
+    btn.tabIndex = 0;
+    btn.appendChild(avatarEl(m, true));
+    const name = document.createElement('span');
+    name.className = 'mname';
+    name.textContent = m.name;
+    btn.appendChild(name);
+    if (m.isHost) {
+      const tag = document.createElement('i');
+      tag.textContent = '群主';
+      btn.appendChild(tag);
+    }
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      chooseMention(m);
+    });
+    btn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        chooseMention(m);
+      }
+    });
+    box.appendChild(btn);
+  });
+  box.hidden = false;
+}
+
+function chooseMention(person) {
+  if (!person) return;
+  const pos = input.selectionStart == null ? input.value.length : input.selectionStart;
+  const end = input.selectionEnd == null ? pos : input.selectionEnd;
+  const start = mentionState.start >= 0 ? mentionState.start : pos;
+  const text = `@${person.name} `;
+  input.value = input.value.slice(0, start) + text + input.value.slice(end);
+  const next = start + text.length;
+  try {
+    input.setSelectionRange(next, next);
+  } catch {
+    /* ignore */
+  }
+  closeMention();
+  autoGrow();
+  updateSendState();
+  saveDraft();
+  input.focus();
+  sendTyping(true);
+}
+
 function sendText() {
   const v = input.value.trim();
   if (!v) return;
@@ -962,10 +1562,12 @@ function sendText() {
     toast('单条消息太长了');
     return;
   }
-  api.sendText(v);
+  api.sendText(v, replyTo);
   sendTyping(false);
   play('send');
   input.value = '';
+  clearReply();
+  closeMention();
   try {
     localStorage.removeItem('ldDraft');
   } catch {
@@ -980,11 +1582,35 @@ input.addEventListener('input', () => {
   autoGrow();
   updateSendState();
   saveDraft();
+  updateMention();
   if (input.value.trim()) sendTyping(true);
   else sendTyping(false);
 });
-input.addEventListener('blur', () => sendTyping(false));
+input.addEventListener('blur', () => {
+  sendTyping(false);
+  setTimeout(closeMention, 120);
+});
 input.addEventListener('keydown', (e) => {
+  if (e.isComposing) return;
+  if (mentionState.open) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const n = mentionState.items.length;
+      mentionState.index = (mentionState.index + (e.key === 'ArrowDown' ? 1 : -1) + n) % n;
+      renderMention();
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      chooseMention(mentionState.items[mentionState.index]);
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeMention();
+      return;
+    }
+  }
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     sendText();
@@ -1058,6 +1684,8 @@ function applyMode(mode) {
   $('btnMax').innerHTML = isFull ? ICON.restore : ICON.max;
   $('btnMax').title = isFull ? '还原小窗' : '最大化';
   if (!isFull && searchMode) closeSearch();
+  if (isFull) $('sideScrim').hidden = true;
+  else if (sideOpen) $('sideScrim').hidden = false;
   updateChrome();
   setTimeout(() => scrollBottom(true), 140);
 }
@@ -1075,6 +1703,7 @@ function applyUrl(url, qr) {
   }
   $('setUrl').textContent = hostOf(currentUrl) || '—';
   $('setUrl').title = currentUrl;
+  renderRoomSide();
 }
 
 // ---------- 设置 ----------
@@ -1087,7 +1716,8 @@ function fillSettings() {
   document.querySelectorAll('#setFont button').forEach((b) => {
     b.classList.toggle('on', b.dataset.v === font);
   });
-  $('setDevices').textContent = devices.length ? devices.join('、') : '未连接';
+  $('setDevices').textContent = `${room.onlineCount || 1} 在线 / ${room.memberCount || 1} 位`;
+  renderRoomBar();
   $('setSound').classList.toggle('on', soundOn);
   $('setNotify').classList.toggle('on', !!state.notify);
   $('setAuto').classList.toggle('on', !!state.autostart);
@@ -1203,12 +1833,79 @@ $('setFw').addEventListener('click', async () => {
 });
 
 $('setReset').addEventListener('click', async () => {
-  const ok = await askConfirm('重置后所有手机都需要重新扫码', '重置');
+  const ok = await askConfirm('重置后已加入的设备都需要重新扫码，成员身份和群历史会保留。', '重置');
   if (!ok) return;
   state = Object.assign(state, await api.resetToken());
   applyUrl(state.url, state.qr);
-  toast('令牌已重置');
+  toast('邀请链接已重置');
 });
+
+// ---------- 群聊设置 ----------
+
+$('setRoomNameBtn').addEventListener('click', async () => {
+  const name = await openPrompt('群名称', room.name || '近传群聊', 24);
+  if (!name) return;
+  const p = await api.roomRename(name);
+  applyRoomPayload(p);
+  toast('群名已更新');
+});
+
+$('setHostNameBtn').addEventListener('click', renameHost);
+
+$('setInvite').addEventListener('click', openInvite);
+
+$('setLock').addEventListener('click', async () => {
+  const p = await api.roomLock(!room.locked);
+  applyRoomPayload(p);
+  toast(room.locked ? '群聊已锁定' : '群聊已解锁');
+});
+
+$('rbMain').addEventListener('click', toggleSide);
+$('rbMain').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    toggleSide();
+  }
+});
+$('rbMembers').addEventListener('click', toggleSide);
+$('rbStack').addEventListener('click', toggleSide);
+$('rbInvite').addEventListener('click', openInvite);
+$('rsClose').addEventListener('click', closeSide);
+$('sideScrim').addEventListener('click', closeSide);
+$('rsNick').addEventListener('click', renameHost);
+$('rsSettings').addEventListener('click', () => {
+  closeSide();
+  setView('settings');
+});
+
+$('inviteClose').addEventListener('click', () => {
+  $('inviteWrap').hidden = true;
+});
+$('inviteWrap').addEventListener('click', (e) => {
+  if (e.target === $('inviteWrap')) $('inviteWrap').hidden = true;
+});
+$('inviteCopy').addEventListener('click', () => {
+  if (!currentUrl) return;
+  api.copyText(currentUrl);
+  toast('邀请链接已复制');
+});
+
+$('promptOk').addEventListener('click', () => closePrompt($('promptInput').value.trim()));
+$('promptInput').addEventListener('keydown', (e) => {
+  if (e.isComposing) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    closePrompt($('promptInput').value.trim());
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closePrompt(null);
+  }
+});
+$('promptWrap').addEventListener('click', (e) => {
+  if (e.target === $('promptWrap')) closePrompt(null);
+});
+
+$('replyClose').addEventListener('click', clearReply);
 
 $('setClear').addEventListener('click', async () => {
   const ok = await askConfirm('清空全部聊天记录？已保存的文件不受影响', '清空');
@@ -1223,7 +1920,7 @@ $('btnMax').addEventListener('click', () => api.setMode(isFull ? 'compact' : 'fu
 $('btnClose').addEventListener('click', () => api.hide());
 $('btnGear').addEventListener('click', () => setView('settings'));
 $('btnBack').addEventListener('click', () => setView(targetView()));
-$('connbarBtn').addEventListener('click', () => setView('connect'));
+$('connbarBtn').addEventListener('click', openInvite);
 $('jumpPill').addEventListener('click', () => {
   pendingNew = 0;
   $('jumpPill').hidden = true;
@@ -1249,6 +1946,11 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   if (e.key !== 'Escape') return;
+  if (!$('promptWrap').hidden) return closePrompt(null);
+  if (!$('inviteWrap').hidden) return void ($('inviteWrap').hidden = true);
+  if (mentionState.open) return closeMention();
+  if (sideOpen) return closeSide();
+  if (replyTo) return clearReply();
   if (!$('emojiPop').hidden) return closeEmoji();
   if ($('lightbox').classList.contains('on')) return closeLightbox();
   if (view === 'settings') return setView(targetView());
@@ -1277,12 +1979,12 @@ function onDownload(p) {
   const pct = p.total ? Math.min(100, Math.round((p.sent * 100) / p.total)) : 0;
   bar.querySelector('i').style.width = pct + '%';
   bar.querySelector('span').textContent = p.aborted
-    ? '手机下载已中断'
+    ? '下载已中断'
     : p.waiting
-      ? '等待手机下载'
+      ? '等待成员下载'
       : p.done
-        ? '手机已下载'
-        : `手机下载中 ${pct}%`;
+        ? '成员已下载'
+        : `成员下载中 ${pct}%`;
   bar.classList.toggle('done', !!p.done);
   bar.classList.toggle('waiting', !!p.waiting);
   if (p.done || p.aborted) {
@@ -1297,36 +1999,9 @@ function onDownload(p) {
 }
 
 function markWaitingDownload(m) {
-  if (!m || m.from !== 'pc' || m.status !== 'ok') return;
+  if (!m || !isMine(m) || m.status !== 'ok') return;
   if (m.kind !== 'image' && m.kind !== 'file') return;
   onDownload({ id: m.id, sent: 0, total: m.size || 0, done: false, waiting: true });
-}
-
-function onPresence(list) {  const had = devices.length;
-  devices = Array.isArray(list) ? list : [];
-  updateChrome();
-  appEl.classList.toggle('offline', devices.length === 0 && loaded.length > 0);
-  if (!devices.length) hideTyping();
-  if (view === 'settings') {
-    $('setDevices').textContent = devices.length ? devices.join('、') : '未连接';
-  }
-  // 手机重新连上后，把电脑端已经看到的消息补一次已读回执
-  if (devices.length) markSeen();
-
-  if (devices.length > had) {
-    const name = devices[0] || '手机';
-    if (view === 'connect') {
-      playConnect(name);
-      return;
-    }
-    if (Date.now() - lastConnectAt > 30000) {
-      play('connect');
-      toast(`${name} 已连接`);
-      pulseDot();
-      lastConnectAt = Date.now();
-    }
-  }
-  syncView();
 }
 
 function onEvent(p) {
@@ -1336,9 +2011,9 @@ function onEvent(p) {
       // 初始化期间排队重放 + 服务端历史可能已经包含同一条，避免重复
       if (p.msg && byId.has(p.msg.id)) break;
       loaded.push(p.msg);
-      if (p.msg.from === 'phone') {
+      if (p.msg.uid) setTyping(p.msg.uid, authorOf(p.msg).name, false);
+      if (!isMine(p.msg) && p.msg.kind !== 'system') {
         play('recv');
-        hideTyping();
       }
       if (view !== 'chat') syncView();
       else if (searchMode && searchQuery.trim() && !matchQuery(p.msg, searchQuery.trim().toLowerCase())) break;
@@ -1346,11 +2021,11 @@ function onEvent(p) {
       break;
     }
     case 'typing':
-      if (p.from === 'phone') showTyping(!!p.on);
+      if (p.member && p.member.id) setTyping(p.member.id, p.member.name, !!p.on);
       break;
     case 'msg:update':
       patchMessage(p.id, p.patch);
-      // 手机上传的文件只有收完（ok）才应显示已读双勾
+      // 手机上传的文件只有收完（ok）才应显示已读
       if (p.patch && p.patch.status === 'ok') markSeen();
       break;
     case 'msg:delete':
@@ -1358,6 +2033,7 @@ function onEvent(p) {
       break;
     case 'clear':
       loaded = [];
+      clearReply();
       if (multiMode) exitMulti();
       if (searchMode) closeSearch();
       renderAll(currentList());
@@ -1369,8 +2045,8 @@ function onEvent(p) {
     case 'url':
       applyUrl(p.url, p.qr);
       break;
-    case 'presence':
-      onPresence(p.devices);
+    case 'room':
+      applyRoomPayload(p);
       break;
     case 'download':
       onDownload(p);
@@ -1414,6 +2090,9 @@ function onEvent(p) {
   soundOn = !!s.sound;
   pinned = !!s.pinned;
   devices = s.devices || [];
+  room = s.room || room;
+  members = s.members || [];
+  blocked = s.blocked || [];
   loaded = s.messages || [];
   currentUrl = s.url || '';
   currentQr = s.qr || '';
@@ -1423,6 +2102,7 @@ function onEvent(p) {
   applyPin();
   applyUrl(s.url, s.qr);
   buildEmoji();
+  applyRoomPayload({ room, members, blocked }, true);
 
   try {
     const draft = localStorage.getItem('ldDraft');
@@ -1436,8 +2116,8 @@ function onEvent(p) {
   btnSend.disabled = !input.value.trim();
 
   view = '';
-  setView((!loaded.length && !devices.length) ? 'connect' : 'chat');
-  appEl.classList.toggle('offline', devices.length === 0 && loaded.length > 0);
+  setView(targetView());
+  appEl.classList.toggle('offline', devices.length === 0 && loaded.some((m) => m.kind !== 'system'));
   markSeen();
 
   if (s.locked) {

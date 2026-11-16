@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('api', {
   onEvent: (cb) => ipcRenderer.on('ev', (_e, payload) => cb(payload)),
   toFileUrl: (p) => pathToFileURL(String(p)).href,
 
-  sendText: (text) => ipcRenderer.send('send-text', text),
+  sendText: (text, reply) => ipcRenderer.send('send-text', { text, reply }),
   typing: (on) => ipcRenderer.send('typing', on),
   recallMsg: (id) => ipcRenderer.invoke('recall-msg', id),
   openReleases: () => ipcRenderer.send('open-releases'),
@@ -35,4 +35,12 @@ contextBridge.exposeInMainWorld('api', {
   setMode: (m) => ipcRenderer.send('mode', m),
   hide: () => ipcRenderer.send('hide'),
   togglePin: () => ipcRenderer.send('toggle-pin'),
+
+  roomSnapshot: () => ipcRenderer.invoke('room:snapshot'),
+  roomRename: (name) => ipcRenderer.invoke('room:rename', name),
+  roomHostName: (name) => ipcRenderer.invoke('room:host-name', name),
+  roomLock: (locked) => ipcRenderer.invoke('room:lock', locked),
+  roomKick: (id) => ipcRenderer.invoke('room:kick', id),
+  roomUnblock: (id) => ipcRenderer.invoke('room:unblock', id),
+  roomInvite: () => ipcRenderer.invoke('room:invite'),
 });

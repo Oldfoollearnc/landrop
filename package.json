@@ -1,8 +1,8 @@
 {
   "name": "nearsend",
   "productName": "NearSend",
-  "version": "2.1.0",
-  "description": "近传：手机与电脑在同一 Wi-Fi 下直传文字、图片和文件，不登录、不上云、不压缩",
+  "version": "2.2.0",
+  "description": "近传：同一 Wi-Fi 下的局域网群聊，手机和电脑免安装扫码加入，直传文字、图片和文件，不登录、不上云",
   "main": "src/main/main.js",
   "author": {
     "name": "NearSend"

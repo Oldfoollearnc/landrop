@@ -1,7 +1,7 @@
 {
-  "name": "近传",
+  "name": "近传群聊",
   "short_name": "近传",
-  "description": "手机 ⇄ 电脑，局域网直传",
+  "description": "局域网群聊与文件互传，不登录、不上云",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f6f7fb",

@@ -32,10 +32,17 @@
   // ---------- 偏好 ----------
 
   const PREF_KEY = 'ns.prefs';
+  const MEMBER_KEY = 'ns.member';
+  const COLORS = ['sky', 'mint', 'amber', 'rose', 'violet', 'lime', 'coral', 'slate'];
+  const storedPrefs = readJSON(PREF_KEY);
   const prefs = Object.assign(
     { enterSend: false, haptics: true, font: 'm', theme: 'auto', density: 'normal' },
-    readJSON(PREF_KEY) || {}
+    storedPrefs || {}
   );
+  // 电脑浏览器默认回车发送；触屏设备仍然回车换行
+  if (!storedPrefs && window.matchMedia && window.matchMedia('(pointer: fine)').matches) {
+    prefs.enterSend = true;
+  }
   function readJSON(key) {
     try {
       return JSON.parse(localStorage.getItem(key) || 'null');
@@ -70,6 +77,60 @@
   const bootTag = Date.now().toString(36).slice(-4) + Math.random().toString(36).slice(2, 6);
   const nextCid = (kind) => `${myId}.${bootTag}.${kind}${++seq}`;
 
+  // ---------- 设备与群成员身份 ----------
+
+  function deviceKind() {
+    const ua = navigator.userAgent || '';
+    if (/iPad|Tablet|PlayBook|Silk/i.test(ua)) return 'tablet';
+    if (/iPhone|Android|Mobile|Windows Phone/i.test(ua)) return 'phone';
+    return 'desktop';
+  }
+
+  function defaultName() {
+    const ua = navigator.userAgent || '';
+    if (/iPhone/i.test(ua)) return 'iPhone';
+    if (/iPad/i.test(ua)) return 'iPad';
+    if (/Android/i.test(ua)) return 'Android手机';
+    if (/Macintosh/i.test(ua)) return 'Mac';
+    if (/Windows/i.test(ua)) return 'Windows电脑';
+    return '成员';
+  }
+
+  function colorForName(name, requested) {
+    if (COLORS.includes(requested)) return requested;
+    let h = 0;
+    for (const ch of Array.from(String(name || ''))) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+    return COLORS[h % COLORS.length];
+  }
+
+  function saveMember(next) {
+    try {
+      if (next) localStorage.setItem(MEMBER_KEY, JSON.stringify(next));
+      else localStorage.removeItem(MEMBER_KEY);
+    } catch {
+      /* 隐私模式可能写不了，本次会话仍可继续 */
+    }
+  }
+
+  function loadMember() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(MEMBER_KEY) || 'null');
+      if (!saved || typeof saved !== 'object') return null;
+      if (!saved.id || !saved.key) return null;
+      return {
+        id: String(saved.id),
+        key: String(saved.key),
+        name: String(saved.name || defaultName()),
+        color: colorForName(saved.name, saved.color),
+        kind: deviceKind(),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  let member = loadMember();
+
   // ---------- 状态 ----------
 
   const state = {
@@ -99,10 +160,21 @@
     dlIds: new Map(),   // 消息 id -> 系统下载任务 id
     saved: new Set(),
     cancelUploads: new Set(), // cid -> 用户已取消，上传循环看到后停止
+    me: null,
+    room: null,
+    members: [],
+    blocked: [],
+    typing: new Map(),
+    joined: false,
+    sideOpen: false,
+    invite: null,
+    joining: false,
+    hiddenUnread: 0,
   };
 
   let ws = null;
   let retryDelay = 600;
+  let connectPaused = false;
   let reconnectTimer = null;
   let hbTimer = null;
   let typingHideTimer = null;
@@ -172,7 +244,70 @@
     return `${dayLabel(ts)} ${clock(ts)}`;
   }
 
-  const isMine = (m) => m.from === 'phone';
+  const isLocal = (m) => !!m && (String(m.id).startsWith('local:') || (m.src && state.pending.has(m.src)));
+
+  function isMine(m) {
+    if (!m) return false;
+    if (isLocal(m)) return true;
+    if (m.uid) return !!(state.me && m.uid === state.me.id);
+    // 旧版历史没有署名：手机端不再把「所有 phone 消息」误认成自己
+    return false;
+  }
+
+  function memberById(id) {
+    return state.members.find((x) => x.id === id) || null;
+  }
+
+  function authorOf(m) {
+    if (!m) return { id: '', name: '成员', color: 'slate', kind: 'phone' };
+    const live = m.author && memberById(m.author.id);
+    if (live) return live;
+    if (m.author) return m.author;
+    if (m.uid === 'host' || m.from === 'pc') {
+      const host = state.room && state.room.host;
+      return host || { id: 'host', name: '电脑', color: 'sky', kind: 'desktop' };
+    }
+    return { id: 'legacy', name: '成员', color: 'slate', kind: 'phone' };
+  }
+
+  function avatarEl(person, small) {
+    const el = document.createElement('span');
+    el.className = 'av' + (small ? ' sm' : '');
+    el.dataset.c = person && person.color ? person.color : 'slate';
+    const chars = Array.from(String((person && person.name) || '?'));
+    el.textContent = chars.length ? chars[0] : '?';
+    return el;
+  }
+
+  function onlineMembers() {
+    return state.members.filter((m) => m && m.online);
+  }
+
+  function readCount(m) {
+    if (!m) return 0;
+    if (Array.isArray(m.seenBy)) return m.seenBy.length;
+    return m.seen ? 1 : 0;
+  }
+
+  function readByMe(m) {
+    return !!(state.me && (Array.isArray(m.seenBy)
+      ? m.seenBy.includes(state.me.id)
+      : m.seen));
+  }
+
+  function kindLabel(kind) {
+    return kind === 'phone' ? '手机' : kind === 'tablet' ? '平板' : '电脑';
+  }
+
+  function lastSeenText(ts) {
+    const diff = Date.now() - Number(ts || 0);
+    if (!ts || diff < 0) return '离线';
+    if (diff < 60e3) return '刚刚在线';
+    if (diff < 3600e3) return Math.floor(diff / 60e3) + ' 分钟前';
+    if (diff < 86400e3) return Math.floor(diff / 3600e3) + ' 小时前';
+    const d = new Date(ts);
+    return `${d.getMonth() + 1}月${d.getDate()}日`;
+  }
   const isMedia = (m) => m.kind === 'image' || m.kind === 'file' || m.kind === 'video';
 
   function buzz(ms = 8) {
@@ -198,23 +333,43 @@
     toastTimer = setTimeout(() => toastEl.classList.remove('on'), 1900);
   }
 
-  function showTyping(on) {
+  function renderTyping() {
+    const now = Date.now();
+    for (const [id, item] of state.typing) {
+      if (!item || item.until <= now) state.typing.delete(id);
+    }
     const el = $('typing');
+    const names = [...state.typing.entries()]
+      .filter(([id]) => !state.me || id !== state.me.id)
+      .map(([, item]) => item.name)
+      .filter(Boolean);
     clearTimeout(typingHideTimer);
     typingHideTimer = null;
-    if (!on) {
+    if (!names.length) {
       el.hidden = true;
       return;
     }
     el.hidden = false;
-    typingHideTimer = setTimeout(() => showTyping(false), 4000);
+    $('typingText').textContent = names.length === 1
+      ? `${names[0]} 正在输入`
+      : names.length === 2
+        ? `${names[0]}、${names[1]} 正在输入`
+        : `${names.length} 人正在输入`;
+    typingHideTimer = setTimeout(renderTyping, 1600);
+  }
+
+  function setTyping(id, name, on) {
+    if (!id || (state.me && id === state.me.id)) return;
+    if (on) state.typing.set(id, { name: name || '成员', until: Date.now() + 5000 });
+    else state.typing.delete(id);
+    renderTyping();
   }
 
   function sendTyping(on) {
     clearTimeout(typingStopTimer);
     typingStopTimer = null;
     if (on) {
-      if (!state.connected || !ws || ws.readyState !== 1) return;
+      if (!state.connected || !state.joined || !ws || ws.readyState !== 1) return;
       const now = Date.now();
       if (now - lastTypingSent < 1800) return;
       lastTypingSent = now;
@@ -275,6 +430,7 @@
     brush: 'M4 20l4.5-1.2L20 7.3 16.7 4 5.2 15.5z',
     undo: 'M9.5 7.5L4.5 12l5 4.5 M5.2 12h8.6a5.2 5.2 0 0 1 0 10.4h-1',
     chevron: 'M9 5.5L15.5 12 9 18.5',
+    edit: 'M4 20l4.2-1 10.4-10.4-3.2-3.2L5 15.8z M13.8 7l3.2 3.2',
   };
 
   // ---------- 主题与字号 ----------
@@ -375,12 +531,39 @@
     }
   }
 
+  function escapeRe(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function appendMentions(container, text) {
+    const names = state.members.map((m) => m && m.name).filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+    if (!names.length || !text.includes('@')) {
+      container.appendChild(document.createTextNode(text));
+      return;
+    }
+    const re = new RegExp('@(' + names.map(escapeRe).join('|') + ')(?![\\p{L}\\p{N}_])', 'gu');
+    let last = 0;
+    let m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) container.appendChild(document.createTextNode(text.slice(last, m.index)));
+      const span = document.createElement('span');
+      span.className = 'at';
+      const hit = state.members.find((x) => x && x.name === m[1]);
+      if (state.me && hit && hit.id === state.me.id) span.classList.add('me');
+      span.textContent = '@' + m[1];
+      container.appendChild(span);
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) container.appendChild(document.createTextNode(text.slice(last)));
+  }
+
   function linkify(container, text) {
     const re = /(https?:\/\/[^\s<>()"'，。；！？、]+)/g;
     let last = 0;
     let m;
     while ((m = re.exec(text))) {
-      if (m.index > last) container.appendChild(document.createTextNode(text.slice(last, m.index)));
+      if (m.index > last) appendMentions(container, text.slice(last, m.index));
       const a = document.createElement('a');
       a.href = m[1];
       a.textContent = m[1];
@@ -392,7 +575,7 @@
       container.appendChild(a);
       last = m.index + m[1].length;
     }
-    if (last < text.length) container.appendChild(document.createTextNode(text.slice(last)));
+    if (last < text.length) appendMentions(container, text.slice(last));
   }
 
   function openLink(url) {
@@ -408,7 +591,13 @@
     q.className = 'quote';
     const name = document.createElement('span');
     name.className = 'qname';
-    name.textContent = reply.from === 'pc' ? '对方' : '我';
+    let who = '';
+    if (reply.author && reply.author.name) who = reply.author.name;
+    else if (reply.uid && state.me && reply.uid === state.me.id) who = '我';
+    else if (reply.uid === 'host' || reply.from === 'pc') who = (state.room && state.room.host && state.room.host.name) || '电脑';
+    else who = '成员';
+    if (state.me && reply.uid === state.me.id) who = '我';
+    name.textContent = who;
     const text = document.createElement('span');
     text.className = 'qtext';
     text.textContent = reply.kind === 'image'
@@ -451,11 +640,19 @@
     return box;
   }
 
+  function seenLabel(m) {
+    const n = readCount(m);
+    if (!n) return '已送达';
+    return n === 1 ? '已读' : `${n} 人已读`;
+  }
+
   function ticksEl(m) {
     const wrap = document.createElement('span');
-    wrap.className = 'ticks' + (m.seen ? ' seen' : '');
-    const n = m.seen ? 2 : 1;
-    for (let i = 0; i < n; i++) {
+    const n = readCount(m);
+    wrap.className = 'ticks' + (n ? ' seen' : '');
+    wrap.title = seenLabel(m);
+    const count = n ? 2 : 1;
+    for (let i = 0; i < count; i++) {
       const s = svg('M4.5 12.5l4.2 4.2L19.5 5.8', 11, { width: 2.4 });
       s.style.marginLeft = i ? '-6px' : '0';
       wrap.appendChild(s);
@@ -485,8 +682,14 @@
       st.className = 'failed-label';
       st.textContent = '未送达';
       meta.appendChild(st);
-    } else if (m.from === 'phone' && m.kind === 'text') {
+    } else if (isMine(m) && m.kind === 'text') {
       meta.appendChild(ticksEl(m));
+      const n = readCount(m);
+      if (n) {
+        const r = document.createElement('span');
+        r.textContent = n === 1 ? '已读' : `${n} 人已读`;
+        meta.appendChild(r);
+      }
     }
     return meta;
   }
@@ -517,8 +720,7 @@
       tick.style.marginLeft = '5px';
       tick.style.verticalAlign = '-1px';
       fs.appendChild(tick);
-    }
-    fx.appendChild(fn);
+    }    fx.appendChild(fn);
     fx.appendChild(fs);
     wrap.appendChild(ic);
     wrap.appendChild(fx);
@@ -534,9 +736,8 @@
     return p;
   }
 
-  function buildRow(m) {
+  function buildRow(m, cont) {
     const row = document.createElement('div');
-    row.className = 'msg ' + (isMine(m) ? 'out' : 'in') + (m.status === 'error' ? ' failed' : '');
     row.dataset.id = m.id;
     // 长按弹出的操作面板在松手后仍可能补发一次 click（打开大图/链接/重发）。
     // 在捕获阶段吞掉这次 click，避免面板和 viewer 同时打开。
@@ -546,16 +747,49 @@
         e.stopPropagation();
       }
     }, true);
+
+    if (m.kind === 'system') {
+      row.className = 'msg sys';
+      const tip = document.createElement('span');
+      tip.textContent = m.text || '';
+      row.appendChild(tip);
+      return row;
+    }
+
+    const out = isMine(m);
+    const who = authorOf(m);
+    row.className = 'msg ' + (out ? 'out' : 'in')
+      + (m.status === 'error' ? ' failed' : '')
+      + (cont ? ' cont' : '');
+
     if (m.recalled) {
       row.classList.add('sys');
       if (state.selection.has(m.id)) row.classList.add('sel');
       const tip = document.createElement('span');
-      tip.textContent = isMine(m) ? '你撤回了一条消息' : '对方撤回了一条消息';
+      tip.textContent = out ? '你撤回了一条消息' : `${who.name} 撤回了一条消息`;
       row.appendChild(tip);
       return row;
     }
+
     if (m.status === 'queued') row.classList.add('queued');
     if (state.selection.has(m.id)) row.classList.add('sel');
+
+    const mcol = document.createElement('div');
+    mcol.className = 'mcol';
+
+    if (!out) {
+      const av = avatarEl(who);
+      if (cont) av.classList.add('gone');
+      row.appendChild(av);
+      if (!cont) {
+        const name = document.createElement('span');
+        name.className = 'who';
+        name.dataset.c = who.color || 'slate';
+        name.textContent = who.name;
+        mcol.appendChild(name);
+      }
+    }
+
     const b = document.createElement('div');
     b.className = 'bubble';
 
@@ -563,7 +797,7 @@
 
     if (m.kind === 'text') {
       b.appendChild(textContentEl(m));
-      if (isMine(m)) b.appendChild(metaEl(m));
+      if (out) b.appendChild(metaEl(m));
     } else {
       b.classList.add('media');
       const video = /^video\//i.test(m.mime || '') || /\.(mp4|mov|webm|m4v)$/i.test(m.name || '');
@@ -625,7 +859,7 @@
         size.textContent = fmtSize(m.size);
         cap.appendChild(name);
         cap.appendChild(size);
-        if (isMine(m) && m.status === 'ok') cap.appendChild(ticksEl(m));
+        if (out && m.status === 'ok') cap.appendChild(ticksEl(m));
         b.appendChild(cap);
       }
 
@@ -647,7 +881,7 @@
     }
 
     // 未送达的文字：点一下就地重发
-    if (m.status === 'error' && isMine(m) && m.kind === 'text') {
+    if (m.status === 'error' && out && m.kind === 'text') {
       row.addEventListener('click', (e) => {
         e.stopPropagation();
         if (!state.selecting) retryText(m);
@@ -655,8 +889,12 @@
     }
 
     // 长按整行都能触发：文件卡片的留白区域也要能按到
+    const bubbleWrap = document.createElement('div');
+    bubbleWrap.className = 'bwrap';
+    bubbleWrap.appendChild(b);
+    mcol.appendChild(bubbleWrap);
+    row.appendChild(mcol);
     attachPress(row, m);
-    row.appendChild(b);
     return row;
   }
 
@@ -668,8 +906,9 @@
     const newDay = addDaySeparator(m.ts);
     if (!newDay) addTimeSeparator(m.ts);
 
-    const tight = state.lastFrom === m.from && m.ts - state.lastTs < 180000 && !newDay;
-    const el = buildRow(m);
+    const authorId = m.kind === 'system' ? '' : (m.uid || (m.from === 'pc' ? 'host' : 'legacy'));
+    const tight = !!authorId && state.lastFrom === authorId && m.ts - state.lastTs < 180000 && !newDay;
+    const el = buildRow(m, tight);
     if (!tight) el.classList.add('break');
     el.classList.add('enter');
     setTimeout(() => el.classList.remove('enter'), 240);
@@ -679,17 +918,17 @@
     state.byId.set(m.id, m);
     state.nodes.set(m.id, el);
     state.lastTs = m.ts;
-    state.lastFrom = m.from;
+    state.lastFrom = authorId;
 
     if (isMine(m) || wasNear) {
       pin(true);
       updateJump();
-    } else if (!state.stick) {
+    } else if (!state.stick && m.kind !== 'system') {
       state.unread += 1;
       updateJump();
     }
 
-    if (m.from === 'pc' && m.status === 'ok') scheduleSeen(m.id);
+    if (!isMine(m) && m.kind !== 'system' && m.status === 'ok') scheduleSeen(m.id);
   }
 
   function renderEmpty() {
@@ -700,9 +939,10 @@
     mark.className = 'mark';
     mark.appendChild(svg('M8.4 16.2V7.4M8.4 7.4L5.6 10.2M8.4 7.4l2.8 2.8M15.6 7.8v8.8M15.6 16.6l-2.8-2.8M15.6 16.6l2.8-2.8', 26, { width: 2.2 }));
     const t = document.createElement('b');
-    t.textContent = '已经连通';
+    t.textContent = '群聊已就绪';
     const d = document.createElement('span');
-    d.textContent = '在电脑上输入，或者直接发图片、文件。大文件会分片直传，不压缩、不中转。';
+    d.textContent = '发一条消息，或者邀请同 Wi-Fi 下的手机、电脑扫码加入。大文件分片直传，不压缩、不中转。'
+      + (deviceKind() === 'desktop' ? ' 右键消息可以回复、复制或删除。' : '');
     box.appendChild(mark);
     box.appendChild(t);
     box.appendChild(d);
@@ -736,10 +976,24 @@
     setTimeout(() => pin(false), 120);
   }
 
+  function authorKey(m) {
+    return m.kind === 'system' ? '' : (m.uid || (m.from === 'pc' ? 'host' : 'legacy'));
+  }
+
+  function isCont(m, prev) {
+    if (!m || !prev || m.kind === 'system' || prev.kind === 'system') return false;
+    return authorKey(m) === authorKey(prev)
+      && m.ts - prev.ts < 180000
+      && dayKey(m.ts) === dayKey(prev.ts);
+  }
+
   function rebuildRow(m) {
     const old = state.nodes.get(m.id);
     if (!old) return;
-    const fresh = buildRow(m);
+    const idx = state.messages.findIndex((x) => x.id === m.id);
+    const prev = idx > 0 ? state.messages[idx - 1] : null;
+    const fresh = buildRow(m, isCont(m, prev));
+    if (!isCont(m, prev)) fresh.classList.add('break');
     old.replaceWith(fresh);
     state.nodes.set(m.id, fresh);
   }
@@ -801,6 +1055,8 @@
         id: 'local:' + cid,
         src: cid,
         from: 'phone',
+        uid: state.me ? state.me.id : '',
+        author: state.me ? { id: state.me.id, name: state.me.name, color: state.me.color, kind: state.me.kind } : null,
         kind: 'text',
         text: v.text,
         reply: v.reply,
@@ -820,6 +1076,8 @@
       id: 'local:' + cid,
       src: cid,
       from: 'phone',
+      uid: state.me ? state.me.id : '',
+      author: state.me ? { id: state.me.id, name: state.me.name, color: state.me.color, kind: state.me.kind } : null,
       kind: 'text',
       text,
       reply: reply || null,
@@ -865,6 +1123,7 @@
   }
 
   function connect() {
+    if (!member || connectPaused) return;
     if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
     clearTimeout(reconnectTimer);
     let socket;
@@ -883,12 +1142,23 @@
       state.everConnected = true;
       retryDelay = 600;
       lastInbound = Date.now();
-      setStatus('已连接 · 局域网直传', 'on');
+      setStatus('已连接', 'on');
       setOffline(false);
       startHeartbeat();
-      flushPending();
-      const unseen = state.messages.filter((m) => m.from === 'pc' && m.status === 'ok' && !m.seen).map((m) => m.id);
-      if (unseen.length) sendSeen(unseen.slice(-200));
+      try {
+        ws.send(JSON.stringify({
+          t: 'hello',
+          member: {
+            id: member.id,
+            key: member.key,
+            name: member.name,
+            color: member.color,
+            kind: deviceKind(),
+          },
+        }));
+      } catch {
+        /* close 会兜底 */
+      }
     });
 
     socket.addEventListener('message', (e) => {
@@ -902,16 +1172,40 @@
       onSocket(p);
     });
 
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', (event) => {
       if (ws !== socket) return;
       ws = null;
       state.connected = false;
+      state.joined = false;
+      delete $('app').dataset.joined;
+      if (state.joining) {
+        state.joining = false;
+        connectPaused = true;
+        member = null;
+        saveMember(null);
+        state.me = null;
+        setStatus('加入失败', 'warn');
+        setOffline(false);
+        showJoin('加入失败，请检查网络后重试');
+        return;
+      }
+      if (event && event.code === 4001) {
+        connectPaused = true;
+        for (const cid of state.pending.keys()) setPendingStatus(cid, 'queued');
+        state.typing.clear();
+        renderTyping();
+        setStatus('邀请已重置，请重新扫码', 'warn');
+        setOffline(true, '群主重置了邀请链接，请重新扫描二维码', false);
+        toast('邀请链接已重置，请重新扫码');
+        return;
+      }
       setStatus('连接断开，正在重连…', 'warn');
       const queued = state.pending.size;
       setOffline(true, queued ? `连接断开 · ${queued} 条消息待发送` : '连接断开，正在重连…', true);
       for (const cid of state.pending.keys()) setPendingStatus(cid, 'queued');
-      showTyping(false);
-      scheduleReconnect();
+      state.typing.clear();
+      renderTyping();
+      if (!connectPaused) scheduleReconnect();
     });
 
     socket.addEventListener('error', () => {
@@ -967,7 +1261,7 @@
   function deliver(cid) {
     const item = state.pending.get(cid);
     if (!item) return;
-    if (!ws || ws.readyState !== 1 || !state.connected) {
+    if (!ws || ws.readyState !== 1 || !state.connected || !state.joined) {
       setPendingStatus(cid, 'queued');
       return;
     }
@@ -1062,23 +1356,103 @@
   }
 
   function onSocket(p) {
-    if (p.t === 'init') {
-      state.peer = p.host || state.peer || '电脑';
+    if (p.t === 'ready') {
       state.version = p.version || state.version;
-      $('peer').textContent = state.peer;
-      document.title = state.peer + ' · 近传';
-      // 电脑上的主题不驱动手机；手机端自己决定
+      if (p.room) state.room = p.room;
+      if (p.members) state.members = p.members;
+      renderHeader();
+      renderSide();
+      return;
+    }
+    if (p.t === 'welcome') {
+      if (p.me) {
+        const key = p.me.key || (member && member.id === p.me.id ? member.key : '');
+        state.me = {
+          id: p.me.id,
+          name: p.me.name,
+          color: p.me.color,
+          kind: p.me.kind,
+          key,
+        };
+        member = {
+          id: p.me.id,
+          key,
+          name: p.me.name,
+          color: p.me.color,
+          kind: deviceKind(),
+        };
+        saveMember(member);
+      }
+      state.room = p.room || state.room;
+      state.members = p.members || [];
+      state.blocked = p.blocked || [];
+      state.joined = true;
+      state.joining = false;
+      connectPaused = false;
+      state.peer = (state.room && state.room.name) || '群聊';
+      $('app').dataset.joined = '1';
+      $('join').hidden = true;
+      joinFocused = false;
+      $('joinBtn').disabled = false;
+      $('joinBtn').textContent = '加入群聊';
+      setStatus('已连接', 'on');
+      renderHeader();
+      renderSide();
       reconcileHistory(p.messages || []);
+      flushPending();
+      return;
+    }
+    if (p.t === 'denied') {
+      state.joining = false;
+      connectPaused = true;
+      member = null;
+      saveMember(null);
+      state.me = null;
+      state.joined = false;
+      delete $('app').dataset.joined;
+      if (ws) {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        ws = null;
+      }
+      const msg = p.code === 'blocked'
+        ? '你已被移出群聊，可以以新成员身份加入'
+        : p.code === 'locked'
+          ? '群聊已锁定，暂时无法加入'
+          : p.code === 'full'
+            ? '群成员已满'
+            : '身份已失效，重新加入即可';
+      showJoin(msg);
+      return;
+    }
+    if (p.t === 'me') {
+      if (p.me) {
+        state.me = Object.assign({}, state.me, p.me);
+        if (member) {
+          member.name = p.me.name;
+          member.color = p.me.color;
+          saveMember(member);
+        }
+        renderHeader();
+        renderSide();
+      }
+      return;
+    }
+    if (p.t === 'room') {
+      applyRoom(p);
       return;
     }
     if (p.t === 'typing') {
-      if (p.from === 'pc') showTyping(!!p.on);
+      setTyping(p.id, p.name, !!p.on);
       return;
     }
     if (p.t === 'msg') {
       const m = p.msg;
       if (!m) return;
-      if (m.from === 'pc') showTyping(false);
+      if (m.uid) setTyping(m.uid, (authorOf(m) || {}).name, false);
       if (m.src && state.locals.has(m.src)) {
         const local = state.locals.get(m.src);
         removeLocalRow(local.id);
@@ -1096,6 +1470,10 @@
       }
       if (state.byId.has(m.id)) return;
       appendMessage(m);
+      if (!isMine(m) && m.kind !== 'system' && document.visibilityState !== 'visible') {
+        state.hiddenUnread += 1;
+        updateTitle();
+      }
       return;
     }
     if (p.t === 'msg:update') {
@@ -1109,7 +1487,10 @@
     }
     if (p.t === 'clear') {
       cancelAllUploads();
-      showTyping(false);
+      clearReply();
+      closeMention();
+      state.typing.clear();
+      renderTyping();
       renderAll([]);
       return;
     }
@@ -1117,15 +1498,605 @@
       resolveLocal(p.cid, p.msg || null);
       return;
     }
-    if (p.t === 'pong') {
+    if (p.t === 'kicked') {
+      state.joined = false;
+      connectPaused = true;
+      member = null;
+      saveMember(null);
+      state.me = null;
+      if (ws) {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        ws = null;
+      }
+      showJoin('你已被移出群聊，可以以新成员身份加入');
       return;
     }
-    if (p.t === 'presence') {
+    if (p.t === 'left') {
+      state.joined = false;
+      connectPaused = true;
+      member = null;
+      saveMember(null);
+      state.me = null;
+      if (ws) {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        ws = null;
+      }
+      showJoin('已退出群聊，可以重新加入');
+      return;
+    }
+    if (p.t === 'error') {
+      toast(p.message || '操作失败');
       return;
     }
     if (p.t === 'url') {
+      state.invite = null;
+      ensureInvite().then((inv) => {
+        if (inv && inv.qr) renderSide();
+      });
       return;
     }
+    if (p.t === 'pong' || p.t === 'presence') {
+      return;
+    }
+  }
+
+  function applyRoom(p) {
+    if (p.room) state.room = p.room;
+    if (Array.isArray(p.members)) state.members = p.members;
+    if (Array.isArray(p.blocked)) state.blocked = p.blocked;
+    if (state.me) {
+      const live = memberById(state.me.id);
+      if (live) {
+        state.me.name = live.name;
+        state.me.color = live.color;
+        state.me.online = true;
+        if (member) {
+          member.name = live.name;
+          member.color = live.color;
+          saveMember(member);
+        }
+      }
+    }
+    state.peer = (state.room && state.room.name) || state.peer || '群聊';
+    renderHeader();
+    renderSide();
+    updateTitle();
+  }
+
+  function updateTitle() {
+    const base = ((state.room && state.room.name) || '近传群聊') + ' · 近传';
+    const n = state.hiddenUnread || 0;
+    document.title = n > 0 ? `(${n > 99 ? '99+' : n}) ${base}` : base;
+  }
+
+  function renderHeader() {
+    const room = state.room || { name: '近传群聊', onlineCount: 1, memberCount: 1, locked: false };
+    $('peer').textContent = room.name || '近传群聊';
+    const online = Number(room.onlineCount) || 1;
+    const total = Number(room.memberCount) || 1;
+    $('online').textContent = online >= total ? `${total} 人在线` : `${online}/${total} 在线`;
+    $('lockBadge').hidden = !room.locked;
+
+    const stack = $('stack');
+    stack.textContent = '';
+    const onlineList = state.members.filter((m) => m && m.online);
+    for (const m of onlineList.slice(0, 3)) {
+      stack.appendChild(avatarEl(m, true));
+    }
+    if (onlineList.length > 3) {
+      const more = document.createElement('span');
+      more.className = 'stackmore';
+      more.textContent = '+' + (onlineList.length - 3);
+      stack.appendChild(more);
+    }
+    stack.title = onlineList.map((m) => m.name).join('、');
+    updateTitle();
+  }
+
+  function memberRow(m) {
+    const row = document.createElement('div');
+    row.className = 'mrow' + (m.online ? ' on' : '');
+    row.setAttribute('role', 'button');
+    row.tabIndex = 0;
+    row.appendChild(avatarEl(m));
+    const info = document.createElement('div');
+    info.className = 'minfo';
+    const line = document.createElement('div');
+    line.className = 'mline';
+    const name = document.createElement('b');
+    name.textContent = m.name;
+    line.appendChild(name);
+    if (m.isHost) {
+      const badge = document.createElement('i');
+      badge.className = 'mbadge host';
+      badge.textContent = '群主';
+      line.appendChild(badge);
+    }
+    if (state.me && m.id === state.me.id) {
+      const badge = document.createElement('i');
+      badge.className = 'mbadge';
+      badge.textContent = '我';
+      line.appendChild(badge);
+    }
+    info.appendChild(line);
+    const status = document.createElement('span');
+    status.className = 'msub';
+    status.textContent = m.isHost
+      ? '群主电脑 · 在线'
+      : m.online
+        ? `${kindLabel(m.kind)} · 在线`
+        : `${kindLabel(m.kind)} · ${lastSeenText(m.lastSeen)}`;
+    info.appendChild(status);
+    row.appendChild(info);
+    const dot = document.createElement('span');
+    dot.className = 'mdot' + (m.online ? ' on' : '');
+    row.appendChild(dot);
+    row.addEventListener('click', () => openMemberActions(m));
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openMemberActions(m);
+      }
+    });
+    return row;
+  }
+
+  function renderSide() {
+    const body = $('sideBody');
+    if (!body) return;
+    const room = state.room || { name: '近传群聊', onlineCount: 1, memberCount: 1 };
+    body.textContent = '';
+
+    const card = document.createElement('div');
+    card.className = 'side-room';
+    const mark = document.createElement('span');
+    mark.className = 'side-mark';
+    mark.textContent = '群';
+    card.appendChild(mark);
+    const rinfo = document.createElement('div');
+    const rn = document.createElement('b');
+    rn.textContent = room.name || '近传群聊';
+    const rs = document.createElement('span');
+    rs.textContent = `${room.onlineCount || 1} 人在线 · ${room.memberCount || 1} 位成员${room.locked ? ' · 已锁定' : ''}`;
+    rinfo.appendChild(rn);
+    rinfo.appendChild(rs);
+    card.appendChild(rinfo);
+    body.appendChild(card);
+
+    const invite = document.createElement('div');
+    invite.className = 'invite-card';
+    if (state.invite && state.invite.qr) {
+      const img = document.createElement('img');
+      img.src = state.invite.qr;
+      img.alt = '邀请二维码';
+      invite.appendChild(img);
+      const tip = document.createElement('span');
+      tip.textContent = '手机或电脑扫码加入';
+      invite.appendChild(tip);
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.textContent = '复制链接';
+      copy.addEventListener('click', () => {
+        copyText(state.invite.url || location.href);
+        toast('邀请链接已复制');
+      });
+      invite.appendChild(copy);
+    } else {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'invite-open';
+      btn.textContent = '邀请成员 · 展示二维码';
+      btn.addEventListener('click', openInvite);
+      invite.appendChild(btn);
+      ensureInvite().then((inv) => {
+        if (inv && inv.qr) renderSide();
+      });
+    }
+    body.appendChild(invite);
+
+    const online = state.members.filter((m) => m && m.online);
+    const offline = state.members.filter((m) => m && !m.online);
+    const mkGroup = (title, list) => {
+      if (!list.length) return;
+      const h = document.createElement('div');
+      h.className = 'side-sec';
+      h.textContent = `${title} · ${list.length}`;
+      body.appendChild(h);
+      for (const m of list) body.appendChild(memberRow(m));
+    };
+    mkGroup('在线', online);
+    mkGroup('离线', offline);
+  }
+
+  let inviteLoading = false;
+  function ensureInvite() {
+    if (state.invite && state.invite.qr) return Promise.resolve(state.invite);
+    if (inviteLoading) return Promise.resolve(null);
+    inviteLoading = true;
+    return fetch('/api/room', { headers: authHeaders() })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data) {
+          if (data.room) state.room = data.room;
+          if (Array.isArray(data.members)) state.members = data.members;
+          if (data.invite) state.invite = data.invite;
+          renderHeader();
+        }
+        return state.invite;
+      })
+      .catch(() => null)
+      .finally(() => {
+        inviteLoading = false;
+      });
+  }
+
+  function openSide() {
+    state.sideOpen = true;
+    $('sideScrim').hidden = false;
+    $('app').classList.add('side-open');
+    renderSide();
+    ensureInvite();
+  }
+
+  function closeSide() {
+    state.sideOpen = false;
+    $('app').classList.remove('side-open');
+    $('sideScrim').hidden = true;
+  }
+
+  function openMemberActions(m) {
+    if (!m) return;
+    showSheet((sheet) => {
+      sheet.appendChild(sheetHeader(m.name, m.isHost
+        ? '群主电脑 · 在线'
+        : m.online
+          ? `${kindLabel(m.kind)} · 在线成员`
+          : `${kindLabel(m.kind)} · ${lastSeenText(m.lastSeen)}`));
+      if (!state.me || m.id !== state.me.id) {
+        sheet.appendChild(sheetItem(PATH.reply, '在消息里提到他', () => {
+          insertMention(m.name);
+        }));
+      }
+      sheet.appendChild(sheetItem(PATH.copy, '复制昵称', () => {
+        copyText(m.name);
+        toast('昵称已复制');
+      }));
+      if (state.me && m.id === state.me.id) {
+        sheet.appendChild(sheetItem(PATH.edit, '修改昵称', () => askNickname()));
+      }
+      sheet.appendChild(sheetCancel());
+    });
+  }
+
+  function openInvite() {
+    showSheet((sheet) => {
+      sheet.appendChild(sheetHeader('邀请成员', '同一 Wi-Fi 下扫码，或复制链接'));
+      const box = document.createElement('div');
+      box.className = 'invite-sheet';
+      const status = document.createElement('span');
+      status.textContent = '正在生成二维码…';
+      box.appendChild(status);
+      sheet.appendChild(box);
+      ensureInvite().then((invite) => {
+        box.textContent = '';
+        if (!invite || !invite.qr) {
+          const tip = document.createElement('span');
+          tip.textContent = '暂时拿不到邀请二维码，请确认电脑端网络正常';
+          box.appendChild(tip);
+          return;
+        }
+        const img = document.createElement('img');
+        img.src = invite.qr;
+        img.alt = '邀请二维码';
+        box.appendChild(img);
+        const url = document.createElement('code');
+        url.textContent = invite.url || '';
+        box.appendChild(url);
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'invite-copy';
+        copy.textContent = '复制链接';
+        copy.addEventListener('click', () => {
+          copyText(invite.url || location.href);
+          toast('邀请链接已复制');
+        });
+        box.appendChild(copy);
+      });
+      sheet.appendChild(sheetCancel());
+    });
+  }
+
+  const mentionState = { open: false, items: [], index: 0, start: -1 };
+
+  function closeMention() {
+    mentionState.open = false;
+    mentionState.items = [];
+    mentionState.start = -1;
+    const el = $('mention');
+    if (el) el.hidden = true;
+  }
+
+  function updateMention() {
+    if (!input || input.selectionStart == null) return closeMention();
+    const pos = input.selectionStart;
+    const before = input.value.slice(0, pos);
+    const hit = /(^|[\s(])@([^\s@]{0,16})$/.exec(before);
+    if (!hit) return closeMention();
+    const q = hit[2].toLowerCase();
+    const items = state.members
+      .filter((m) => m && (!state.me || m.id !== state.me.id))
+      .filter((m) => !q || m.name.toLowerCase().includes(q))
+      .sort((a, b) => (a.online === b.online ? 0 : a.online ? -1 : 1))
+      .slice(0, 8);
+    if (!items.length) return closeMention();
+    mentionState.open = true;
+    mentionState.items = items;
+    mentionState.index = 0;
+    mentionState.start = pos - hit[2].length - 1;
+    renderMentionList();
+  }
+
+  function renderMentionList() {
+    const box = $('mention');
+    if (!mentionState.open) {
+      box.hidden = true;
+      return;
+    }
+    box.textContent = '';
+    mentionState.items.forEach((m, i) => {
+      const btn = document.createElement('div');
+      btn.className = 'mitem' + (i === mentionState.index ? ' on' : '');
+      btn.setAttribute('role', 'button');
+      btn.tabIndex = 0;
+      btn.appendChild(avatarEl(m, true));
+      const name = document.createElement('span');
+      name.className = 'mname';
+      name.textContent = m.name;
+      btn.appendChild(name);
+      if (m.isHost) {
+        const tag = document.createElement('i');
+        tag.textContent = '群主';
+        btn.appendChild(tag);
+      }
+      const pick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        chooseMention(m);
+      };
+      btn.addEventListener('pointerdown', pick);
+      btn.addEventListener('click', (e) => e.preventDefault());
+      btn.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') pick(e);
+      });
+      box.appendChild(btn);
+    });
+    box.hidden = false;
+  }
+
+  function chooseMention(person) {
+    if (!person) return;
+    const pos = input.selectionStart == null ? input.value.length : input.selectionStart;
+    const end = input.selectionEnd == null ? pos : input.selectionEnd;
+    const start = mentionState.start >= 0 ? mentionState.start : pos;
+    const text = `@${person.name} `;
+    input.value = input.value.slice(0, start) + text + input.value.slice(end);
+    const next = start + text.length;
+    try {
+      input.setSelectionRange(next, next);
+    } catch {
+      /* ignore */
+    }
+    closeMention();
+    autoGrow();
+    updateSend();
+    saveDraft();
+    input.focus();
+    sendTyping(true);
+  }
+
+  function insertMention(name) {
+    if (!name) return;
+    const pos = input.selectionStart == null ? input.value.length : input.selectionStart;
+    const end = input.selectionEnd == null ? pos : input.selectionEnd;
+    const before = input.value.slice(0, pos);
+    const needSpace = before && !/\s$/.test(before) ? ' ' : '';
+    const text = `${needSpace}@${name} `;
+    input.value = before + text + input.value.slice(end);
+    const next = pos + text.length;
+    try {
+      input.setSelectionRange(next, next);
+    } catch {
+      /* ignore */
+    }
+    autoGrow();
+    updateSend();
+    closeSheet();
+    closeSide();
+    input.focus();
+    sendTyping(true);
+  }
+
+  function askNickname() {
+    const current = (state.me && state.me.name) || defaultName();
+    showSheet((sheet) => {
+      sheet.appendChild(sheetHeader('修改昵称', '群成员会看到这个名字'));
+      const wrap = document.createElement('div');
+      wrap.className = 'nick-edit';
+      const field = document.createElement('input');
+      field.maxLength = 16;
+      field.value = current;
+      field.autocomplete = 'nickname';
+      wrap.appendChild(field);
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.textContent = '保存';
+      save.addEventListener('click', () => {
+        const name = field.value.replace(/\s+/g, '').trim();
+        if (!name) {
+          toast('昵称不能为空');
+          return;
+        }
+        closeSheet();
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({ t: 'rename', name }));
+        } else {
+          toast('连接断开，稍后再试');
+        }
+      });
+      wrap.appendChild(save);
+      field.addEventListener('keydown', (e) => {
+        if (e.isComposing) return;
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          save.click();
+        }
+      });
+      sheet.appendChild(wrap);
+      sheet.appendChild(sheetCancel());
+      setTimeout(() => field.focus(), 80);
+    });
+  }
+
+  // ---------- 入群 ----------
+
+  let joinColor = 'sky';
+  let joinFocused = false;
+
+  function renderJoinColors() {
+    const box = $('joinColors');
+    box.textContent = '';
+    for (const color of COLORS) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'jcolor' + (color === joinColor ? ' on' : '');
+      b.dataset.c = color;
+      b.setAttribute('aria-label', color);
+      b.addEventListener('click', () => {
+        joinColor = color;
+        try {
+          localStorage.setItem('ns.color', color);
+        } catch {
+          /* ignore */
+        }
+        renderJoinColors();
+      });
+      box.appendChild(b);
+    }
+  }
+
+  function showJoin(message) {
+    state.joining = false;
+    delete $('app').dataset.joined;
+    clearReply();
+    closeMention();
+    if (state.sideOpen) closeSide();
+    if (!$('sheetWrap').hidden) closeSheet($('sheetWrap'));
+    if (!$('emojiWrap').hidden) closeEmoji();
+    if (!$('attachWrap').hidden) closeSheet($('attachWrap'));
+    if (!$('viewer').hidden) closeViewer();
+    if (state.selecting) exitSelection();
+    if (state.searching) closeSearch();
+    $('join').hidden = false;
+    $('joinError').hidden = !message;
+    $('joinError').textContent = message || '';
+    const room = state.room;
+    $('joinRoom').textContent = (room && room.name) || '近传群聊';
+    $('joinSub').textContent = room
+      ? `${room.onlineCount || 1} 人在线 · ${room.memberCount || 1} 位成员${room.locked ? ' · 已锁定' : ''}`
+      : '正在连接群主电脑…';
+    const stack = $('joinStack');
+    stack.textContent = '';
+    for (const m of state.members.filter((x) => x.online).slice(0, 5)) {
+      stack.appendChild(avatarEl(m, true));
+    }
+    let savedName = '';
+    try {
+      savedName = localStorage.getItem('ns.nick') || '';
+    } catch {
+      savedName = '';
+    }
+    $('joinName').value = savedName || defaultName();
+    try {
+      joinColor = localStorage.getItem('ns.color') || colorForName($('joinName').value);
+    } catch {
+      joinColor = colorForName($('joinName').value);
+    }
+    renderJoinColors();
+    renderHeader();
+    renderSide();
+    const locked = !!(state.room && state.room.locked);
+    $('joinBtn').disabled = locked;
+    $('joinBtn').textContent = locked ? '群聊已锁定' : '加入群聊';
+    if (!joinFocused && window.matchMedia && window.matchMedia('(pointer: fine)').matches) {
+      joinFocused = true;
+      setTimeout(() => {
+        if ($('join').hidden) return;
+        $('joinName').focus();
+        $('joinName').select();
+      }, 180);
+    }
+  }
+
+  function joinRoom() {
+    if (state.joining) return;
+    const name = $('joinName').value.replace(/\s+/g, '').trim().slice(0, 16);
+    if (!name) {
+      toast('先给自己起个昵称');
+      $('joinName').focus();
+      return;
+    }
+    try {
+      localStorage.setItem('ns.nick', name);
+    } catch {
+      /* ignore */
+    }
+    state.joining = true;
+    $('joinBtn').disabled = true;
+    $('joinBtn').textContent = '正在加入…';
+    member = {
+      id: '',
+      key: '',
+      name,
+      color: joinColor,
+      kind: deviceKind(),
+    };
+    connectPaused = false;
+    if (ws) {
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
+      ws = null;
+    }
+    connect();
+  }
+
+  function openJoinFlow(message) {
+    if (message) showJoin(message);
+    if (state.room) {
+      showJoin(message);
+      return;
+    }
+    fetch('/api/room', { headers: authHeaders() })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data) {
+          state.room = data.room || state.room;
+          state.members = data.members || state.members;
+          state.invite = data.invite || state.invite;
+        }
+        showJoin(message);
+      })
+      .catch(() => showJoin(message));
   }
 
   function reconcileHistory(list) {
@@ -1172,8 +2143,8 @@
     }
     const el = state.nodes.get(id);
     if (!el) return;
-    if ('status' in changes || 'path' in changes || 'seen' in changes || 'name' in changes
-      || 'recalled' in changes) {
+    if ('status' in changes || 'path' in changes || 'seen' in changes || 'seenBy' in changes
+      || 'name' in changes || 'recalled' in changes || 'author' in changes) {
       rebuildRow(m);
       return;
     }
@@ -1258,6 +2229,8 @@
       id: 'local:' + cid,
       src: cid,
       from: 'phone',
+      uid: state.me ? state.me.id : '',
+      author: state.me ? { id: state.me.id, name: state.me.name, color: state.me.color, kind: state.me.kind } : null,
       kind: 'text',
       text: value,
       reply,
@@ -1277,6 +2250,7 @@
     input.value = '';
     sendTyping(false);
     closeEmoji();
+    closeMention();
     autoGrow();
     sendBtn.disabled = true;
     clearReply();
@@ -1285,10 +2259,19 @@
     pin(true);
   }
 
+  function authHeaders(extra) {
+    const headers = Object.assign({}, extra || {});
+    if (state.me && state.me.id) {
+      headers['x-ns-member'] = state.me.id;
+      headers['x-ns-key'] = state.me.key || '';
+    }
+    return headers;
+  }
+
   function postJSON(url, data) {
     return fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data || {}),
     }).then((r) => {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -1301,6 +2284,8 @@
       const xhr = new XMLHttpRequest();
       xhr.open('PUT', `/api/upload/${id}?off=${offset}`);
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      const headers = authHeaders();
+      for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) onProgress(e.loaded);
       };
@@ -1380,6 +2365,8 @@
       id: 'local:' + cid,
       src: cid,
       from: 'phone',
+      uid: state.me ? state.me.id : '',
+      author: state.me ? { id: state.me.id, name: state.me.name, color: state.me.color, kind: state.me.kind } : null,
       kind: isImage ? 'image' : 'file',
       name: file.name || '文件',
       size: file.size,
@@ -1400,6 +2387,8 @@
         size: local.size,
         mime: local.mime,
         cid,
+        memberId: state.me ? state.me.id : '',
+        memberKey: state.me ? state.me.key : '',
       });
       const id = init.id;
       uploadId = id;
@@ -1424,7 +2413,7 @@
       // 用服务端的上传 id（就是消息 id）清理；cid 是手机端编号，服务端不认识
       if (uploadId) {
         try {
-          await fetch(`/api/msg/${uploadId}`, { method: 'DELETE' });
+          await fetch(`/api/msg/${uploadId}`, { method: 'DELETE', headers: authHeaders() });
         } catch {
           /* ignore */
         }
@@ -1607,18 +2596,21 @@
   }
 
   function openActions(m) {
+    const desktopWeb = !native && deviceKind() === 'desktop';
     if (m.id.startsWith('local:')) {
       const cid = m.id.slice(6);
       showSheet((sheet) => {
-        sheet.appendChild(sheetHeader('这条消息还没发出去', '对方还看不到它'));
+        sheet.appendChild(sheetHeader('这条消息还没发出去', '其他成员还看不到它'));
         sheet.appendChild(sheetItem(PATH.trash, '取消发送', () => cancelLocal(cid), { danger: true }));
         sheet.appendChild(sheetCancel());
       });
       return;
     }
+    const mine = isMine(m);
+    const who = authorOf(m);
     const media = isMedia(m) && m.status === 'ok';
     showSheet((sheet) => {
-      sheet.appendChild(sheetHeader(isMine(m) ? '我发送的' : '对方发送的', fullTime(m.ts)));
+      sheet.appendChild(sheetHeader(mine ? '我发送的' : `${who.name} 发送的`, fullTime(m.ts)));
       if (canRecall(m)) {
         sheet.appendChild(sheetItem(PATH.undo, '撤回', () => recallMessage(m.id)));
       }
@@ -1628,16 +2620,27 @@
       if (m.kind === 'image' && m.status === 'ok') {
         sheet.appendChild(sheetItem(PATH.view, '查看大图', () => openViewer(m.id)));
       }
-      sheet.appendChild(sheetItem(PATH.reply, '回复', () => setReply(m)));
+      if (!mine) {
+        sheet.appendChild(sheetItem(PATH.reply, '回复', () => setReply(m)));
+        if (memberById(who.id)) sheet.appendChild(sheetItem(PATH.edit, '提到他', () => insertMention(who.name)));
+      } else {
+        sheet.appendChild(sheetItem(PATH.reply, '回复', () => setReply(m)));
+      }
       if (media) {
-        sheet.appendChild(sheetItem(PATH.save, m.kind === 'image' ? '保存到相册' : '保存到手机', () => saveMedia(m)));
-        sheet.appendChild(sheetItem(PATH.share, '分享到其他应用', () => shareMedia(m)));
+        sheet.appendChild(sheetItem(
+          PATH.save,
+          desktopWeb ? (m.kind === 'image' ? '下载图片' : '下载文件') : (m.kind === 'image' ? '保存到相册' : '保存到手机'),
+          () => saveMedia(m)
+        ));
+        if (!desktopWeb) sheet.appendChild(sheetItem(PATH.share, '分享到其他应用', () => shareMedia(m)));
       }
       if (m.kind === 'text') {
         sheet.appendChild(sheetItem(PATH.share, '分享这段文字', () => shareText(m.text || '')));
       }
-      sheet.appendChild(sheetItem(PATH.select, '多选', () => enterSelection(m.id)));
-      sheet.appendChild(sheetItem(PATH.trash, '删除', () => deleteMessage(m.id), { danger: true }));
+      if (mine) {
+        sheet.appendChild(sheetItem(PATH.select, '多选', () => enterSelection(m.id)));
+        sheet.appendChild(sheetItem(PATH.trash, '删除', () => deleteMessage(m.id), { danger: true }));
+      }
       sheet.appendChild(sheetCancel());
     });
   }
@@ -1894,6 +2897,10 @@
       window.NearSend.shareMedia(m.id, m.name || 'file', m.mime || '');
       return;
     }
+    if (deviceKind() === 'desktop') {
+      saveMedia(m);
+      return;
+    }
     toast('在浏览器里可以长按图片保存后再分享');
   }
 
@@ -1912,7 +2919,7 @@
   }
 
   function recallMessage(id) {
-    fetch(`/api/msg/${id}/recall`, { method: 'POST' })
+    fetch(`/api/msg/${id}/recall`, { method: 'POST', headers: authHeaders() })
       .then(async (r) => {
         if (r.ok) {
           patch(id, { recalled: true });
@@ -1944,7 +2951,7 @@
 
   /** 以服务端结果为准；连不上时不要把消息从界面上删掉，否则刷新后会复活 */
   function serverDelete(id) {
-    return fetch(`/api/msg/${id}`, { method: 'DELETE' }).then((r) => {
+    return fetch(`/api/msg/${id}`, { method: 'DELETE', headers: authHeaders() }).then((r) => {
       if (!r.ok && r.status !== 404) throw new Error('HTTP ' + r.status);
     });
   }
@@ -1962,15 +2969,18 @@
   // ---------- 回复 ----------
 
   function setReply(m) {
+    const who = authorOf(m);
     state.reply = {
       id: m.id,
       from: m.from,
+      uid: m.uid || (m.from === 'pc' ? 'host' : ''),
+      author: who ? { id: who.id, name: who.name, color: who.color, kind: who.kind } : null,
       kind: m.kind,
       text: m.kind === 'text' ? String(m.text || '').slice(0, 120) : '',
       name: m.name || '',
     };
     $('replyBar').hidden = false;
-    $('replyName').textContent = isMine(m) ? '回复我自己的消息' : '回复 ' + (state.peer || '电脑');
+    $('replyName').textContent = isMine(m) ? '回复我自己的消息' : '回复 ' + who.name;
     $('replyText').textContent =
       m.kind === 'text' ? String(m.text || '').slice(0, 60) : m.kind === 'image' ? '[图片]' : '[文件] ' + (m.name || '');
     input.focus();
@@ -2033,6 +3043,8 @@
     const row = e.target.closest('.msg');
     if (!row || !row.dataset.id) return;
     const id = row.dataset.id;
+    const m = state.byId.get(id);
+    if (!m || !isMine(m)) return;
     if (state.selection.has(id)) {
       state.selection.delete(id);
       row.classList.remove('sel');
@@ -2076,8 +3088,9 @@
       return;
     }
     for (const m of state.messages) {
-      if (m.recalled) continue;
-      const hay = ((m.text || '') + ' ' + (m.name || '')).toLowerCase();
+      if (m.recalled || m.kind === 'system') continue;
+      const who = authorOf(m);
+      const hay = ((m.text || '') + ' ' + (m.name || '') + ' ' + (who && who.name ? who.name : '')).toLowerCase();
       if (hay.includes(needle)) state.hits.push(m.id);
     }
     $('searchCount').textContent = state.hits.length ? `1/${state.hits.length}` : '0/0';
@@ -2273,7 +3286,19 @@
 
   function openSettings() {
     showSheet((sheet) => {
-      sheet.appendChild(sheetHeader('聊天设置', native ? '与「近传」应用设置同步' : '只影响这个页面'));
+      sheet.appendChild(sheetHeader('设置', native ? '与「近传」应用设置同步' : '只影响这台设备'));
+
+      const room = state.room || {};
+      sheet.appendChild(sheetItem(PATH.info, '群聊信息', () => {
+        closeSheet();
+        openSide();
+      }, { hint: `${room.onlineCount || 1} 人在线 · ${room.memberCount || 1} 位成员` }));
+
+      sheet.appendChild(sheetItem(PATH.link, '邀请成员', openInvite, { hint: '二维码 / 链接' }));
+
+      sheet.appendChild(sheetItem(PATH.edit, '我的昵称', askNickname, {
+        hint: (state.me && state.me.name) || '',
+      }));
 
       if (!native) {
         const themeRow = document.createElement('div');
@@ -2340,7 +3365,8 @@
 
       sheet.appendChild(sheetItem(PATH.link, '连接信息', () => {
         showSheet((s2) => {
-          s2.appendChild(sheetHeader(state.peer || '电脑', location.host));
+          const host = (state.room && state.room.host && state.room.host.name) || '群主电脑';
+          s2.appendChild(sheetHeader((state.room && state.room.name) || '近传群聊', `群主：${host} · ${location.host}`));
           s2.appendChild(sheetItem(PATH.copy, '复制连接地址', () => copyText(location.href)));
           if (native) s2.appendChild(sheetItem(PATH.settings, '打开应用设置', () => window.NearSend.openSettings()));
           s2.appendChild(sheetCancel());
@@ -2358,21 +3384,30 @@
         }));
       }
 
-      sheet.appendChild(sheetItem(PATH.trash, '清空聊天记录', () => {
-        confirmSheet('电脑端的聊天记录会被清空，已接收的文件保留。', '清空', () => {
-          postJSON('/api/clear', {}).then(() => {
-            renderAll([]);
-            toast('已清空');
-          }).catch(() => toast('清空失败'));
+      sheet.appendChild(sheetItem(PATH.trash, '退出群聊', () => {
+        confirmSheet('退出后可以重新扫码加入，群里的历史消息不会删除。', '退出', () => {
+          closeSheet();
+          if (ws && ws.readyState === 1) {
+            try {
+              ws.send(JSON.stringify({ t: 'leave' }));
+            } catch {
+              /* ignore */
+            }
+          } else {
+            member = null;
+            saveMember(null);
+            state.me = null;
+            showJoin('已退出群聊');
+          }
         });
       }, { danger: true }));
 
       sheet.appendChild(sheetItem(PATH.info, '关于近传', () => {
         showSheet((s2) => {
-          s2.appendChild(sheetHeader('近传 ' + (native && native.version ? native.version : (state.version || '2.1.0')), '手机 ⇄ 电脑，局域网直传'));
+          s2.appendChild(sheetHeader('近传 ' + (state.version || (native && native.version) || '2.2.0'), '局域网群聊 · 文字 / 图片 / 文件'));
           const p = document.createElement('p');
           p.style.cssText = 'margin:10px 12px 14px;font-size:12.5px;line-height:1.8;color:var(--ink-3)';
-          p.textContent = '没有账号，没有云端，没有广告。文字和文件在两台设备之间直连，聊天记录只保存在电脑上。';
+          p.textContent = '没有账号，没有云端，没有广告。群聊由一台电脑托管，所有设备在同一个 Wi-Fi 内直连，聊天记录只保存在群主电脑上。';
           s2.appendChild(p);
           s2.appendChild(sheetCancel());
         });
@@ -2384,12 +3419,13 @@
 
   function showHelp() {
     showSheet((sheet) => {
-      sheet.appendChild(sheetHeader('连不上电脑？', '按顺序检查这几点'));
+      sheet.appendChild(sheetHeader('连不上群聊？', '按顺序检查这几点'));
       const tips = [
-        '电脑上的「近传」是否还在运行（可以收起到托盘）',
-        '手机和电脑连的是不是同一个 Wi-Fi',
+        '群主电脑上的「近传」是否还在运行（可以收起到托盘）',
+        '当前设备是否和群主电脑在同一个 Wi-Fi',
         '路由器是否开了「AP 隔离」或访客网络',
-        '电脑防火墙是否放通了这个端口',
+        '群主电脑防火墙是否放通了这个端口',
+        '如果群主重置了邀请链接，重新扫一次二维码',
       ];
       const ol = document.createElement('div');
       ol.style.cssText = 'padding:4px 14px 12px;font-size:13px;line-height:1.9;color:var(--ink-2)';
@@ -2551,11 +3587,35 @@
   input.addEventListener('input', () => {
     autoGrow();
     updateSend();
+    updateMention();
     if (input.value.trim()) sendTyping(true);
     else sendTyping(false);
   });
-  input.addEventListener('blur', () => sendTyping(false));
+  input.addEventListener('blur', () => {
+    sendTyping(false);
+    setTimeout(closeMention, 120);
+  });
   input.addEventListener('keydown', (e) => {
+    if (e.isComposing) return;
+    if (mentionState.open) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const n = mentionState.items.length;
+        mentionState.index = (mentionState.index + (e.key === 'ArrowDown' ? 1 : -1) + n) % n;
+        renderMentionList();
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        chooseMention(mentionState.items[mentionState.index]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMention();
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       if (prefs.enterSend) {
         e.preventDefault();
@@ -2641,11 +3701,15 @@
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      if (!state.connected) {
+      state.hiddenUnread = 0;
+      updateTitle();
+      if (!state.connected && member) {
         retryDelay = 600;
         connect();
       }
-      const unseen = state.messages.filter((m) => m.from === 'pc' && m.status === 'ok' && !m.seen).map((m) => m.id);
+      const unseen = state.messages
+        .filter((m) => !isMine(m) && m.kind !== 'system' && m.status === 'ok' && !readByMe(m))
+        .map((m) => m.id);
       if (unseen.length) sendSeen(unseen.slice(-200));
     }
   });
@@ -2678,6 +3742,98 @@
   }
   input.addEventListener('focus', () => setTimeout(() => pin(true), 260));
 
+  // ---------- 群聊外壳 ----------
+
+  function requestLeave() {
+    confirmSheet('退出后可以重新扫码加入，群里的历史消息不会删除。', '退出', () => {
+      closeSheet();
+      if (ws && ws.readyState === 1) {
+        try {
+          ws.send(JSON.stringify({ t: 'leave' }));
+        } catch {
+          /* ignore */
+        }
+      } else {
+        member = null;
+        saveMember(null);
+        state.me = null;
+        showJoin('已退出群聊');
+      }
+    });
+  }
+
+  $('roomBtn').addEventListener('click', openSide);
+  $('roomBtn').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      openSide();
+    }
+  });
+  $('stack').addEventListener('click', (e) => {
+    e.stopPropagation();
+    openSide();
+  });
+  $('btnInvite').addEventListener('click', openInvite);
+  $('sideClose').addEventListener('click', closeSide);
+  $('sideScrim').addEventListener('click', closeSide);
+  $('sideNick').addEventListener('click', askNickname);
+  $('sideLeave').addEventListener('click', requestLeave);
+  $('joinBtn').addEventListener('click', joinRoom);
+  $('joinName').addEventListener('keydown', (e) => {
+    if (e.isComposing) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      joinRoom();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (!$('join').hidden) return;
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f') {
+      e.preventDefault();
+      openSearch();
+      return;
+    }
+    if (e.key !== 'Escape') return;
+    if (mentionState.open) return closeMention();
+    if (!$('viewer').hidden) return closeViewer();
+    if (!$('sheetWrap').hidden) return closeSheet($('sheetWrap'));
+    if (!$('emojiWrap').hidden) return closeEmoji();
+    if (!$('attachWrap').hidden) return closeSheet($('attachWrap'));
+    if (state.sideOpen) return closeSide();
+    if (state.searching) return closeSearch();
+    if (state.selecting) return exitSelection();
+    if (state.reply) return clearReply();
+  });
+
+  // 电脑浏览器拖文件进来直接发送
+  let dragDepth = 0;
+  const dropEl = $('drop');
+  document.addEventListener('dragenter', (e) => {
+    if (!state.joined || !e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+    e.preventDefault();
+    dragDepth += 1;
+    dropEl.hidden = false;
+  });
+  document.addEventListener('dragover', (e) => {
+    if (dropEl.hidden) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('dragleave', () => {
+    if (dropEl.hidden) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) dropEl.hidden = true;
+  });
+  document.addEventListener('drop', (e) => {
+    if (dropEl.hidden) return;
+    e.preventDefault();
+    dragDepth = 0;
+    dropEl.hidden = true;
+    const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    if (files.length) handleFiles(files);
+  });
+
   // ---------- 原生桥接 ----------
 
   window.__nsApplyNative = function (cfg) {
@@ -2688,6 +3844,15 @@
   };
 
   window.__nsBack = function () {
+    if (!$('join').hidden) return true;
+    if (mentionState.open) {
+      closeMention();
+      return true;
+    }
+    if (state.sideOpen) {
+      closeSide();
+      return true;
+    }
     if (!$('viewer').hidden) {
       closeViewer();
       return true;
@@ -2722,7 +3887,8 @@
   // ---------- 启动 ----------
 
   function boot() {
-    chat.innerHTML = '<div class="loader"><span class="spinner"></span><span>正在连接电脑…</span></div>';
+    if (!native && deviceKind() === 'desktop') $('viewerShare').textContent = '下载';
+    chat.innerHTML = '<div class="loader"><span class="spinner"></span><span>正在加入群聊…</span></div>';
     loadQueue();
     try {
       const saved = JSON.parse(localStorage.getItem('ns.saved') || '[]');
@@ -2730,20 +3896,27 @@
     } catch {
       /* ignore */
     }
-    $('peer').textContent = '电脑';
+    $('peer').textContent = '近传群聊';
     setStatus('连接中…', 'warn');
     // 待发送的消息先渲染出来，断网也能看见自己写了什么
     if (state.pending.size) {
       renderAll([]);
       pin(true);
     }
-    connect();
     restoreDraft();
     autoGrow();
+    updateTitle();
+    if (member) {
+      connect();
+    } else {
+      setStatus('等待加入', 'warn');
+      openJoinFlow();
+    }
 
     // 回到前台、网络恢复时立刻验一次连接，别等心跳发现
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'visible') return;
+      if (!state.joined) return;
       if (!ws || ws.readyState !== 1) {
         connect();
         return;
@@ -2755,7 +3928,7 @@
       }
     });
     window.addEventListener('online', () => {
-      if (!ws || ws.readyState !== 1) connect();
+      if (member && (!ws || ws.readyState !== 1)) connect();
     });
   }
 

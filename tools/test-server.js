@@ -3,9 +3,12 @@
 // 用法：node tools/test-server.js
 const http = require('http');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const { LanServer } = require(path.join(__dirname, '..', 'src', 'main', 'server'));
 const { Uploads } = require(path.join(__dirname, '..', 'src', 'main', 'uploads'));
 const { Store } = require(path.join(__dirname, '..', 'src', 'main', 'store'));
+const { Room } = require(path.join(__dirname, '..', 'src', 'main', 'room'));
 const { PREFIX } = require(path.join(__dirname, '..', 'src', 'main', 'crypto'));
 
 let failures = 0;
@@ -61,6 +64,7 @@ function request(port, method, urlPath, body, headers) {
         path: urlPath,
         method,
         headers: Object.assign(
+          { 'User-Agent': 'LanDrop-Android/1.0' },
           raw ? { 'Content-Type': 'application/json', 'Content-Length': raw.length } : {},
           headers || {}
         ),
@@ -89,6 +93,8 @@ function request(port, method, urlPath, body, headers) {
 
 (async () => {
   const core = makeCore();
+  const roomDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nearsend-room-'));
+  const room = new Room(path.join(roomDir, 'room.json')).load();
   const aborts = [];
   let abortAll = 0;
   let uploadSeq = 0;
@@ -108,7 +114,7 @@ function request(port, method, urlPath, body, headers) {
       abortAll += 1;
     },
   };
-  const server = new LanServer({ core, uploads, token: 'testtoken' });
+  const server = new LanServer({ core, uploads, token: 'testtoken', room });
   const port = await server.start(18999);
   const T = '?t=testtoken';
 
@@ -124,6 +130,15 @@ function request(port, method, urlPath, body, headers) {
   check('history 带 app 标识', r.json && r.json.app === 'nearsend');
   check('history 带电脑名（手机检查连通性时直接取用）',
     r.json && typeof r.json.host === 'string' && r.json.host.length > 0, r.json && r.json.host);
+
+  console.log('群聊房间');
+  r = await request(port, 'GET', '/api/room' + T);
+  check('房间信息返回 200', r.code === 200 && r.json && r.json.room, 'code=' + r.code);
+  check('房间默认群主在线', r.json && r.json.room && r.json.room.onlineCount === 1,
+    JSON.stringify(r.json && r.json.room));
+  check('房间包含邀请链接与二维码', r.json && r.json.invite && r.json.invite.url
+    && /^data:image\/png;base64,/.test(r.json.invite.qr || ''),
+  JSON.stringify(r.json && r.json.invite && { url: r.json.invite.url, qr: (r.json.invite.qr || '').slice(0, 22) }));
 
   console.log('PWA 静态资源');
   r = await request(port, 'GET', '/m/manifest.webmanifest');
@@ -145,6 +160,11 @@ function request(port, method, urlPath, body, headers) {
   r = await request(port, 'POST', '/api/send/text' + T, { text: '   ' });
   check('空文字返回 400', r.code === 400, 'code=' + r.code);
 
+  r = await request(port, 'POST', '/api/send/text' + T, { text: 'browser no identity' }, {
+    'User-Agent': 'Mozilla/5.0 Chrome/120',
+  });
+  check('浏览器无成员身份不能借令牌匿名发消息', r.code === 401, 'code=' + r.code);
+
   console.log('引用与清空');
   r = await request(port, 'POST', '/api/send/text' + T, {
     text: 'reply test',
@@ -156,8 +176,9 @@ function request(port, method, urlPath, body, headers) {
   check('引用里的多余字段被丢弃', replied && replied.reply && replied.reply.evil === undefined);
 
   r = await request(port, 'POST', '/api/clear' + T, {});
-  check('清空返回 ok', r.code === 200 && r.json && r.json.ok === true);
-  check('清空后无消息', core.count() === 0, 'count=' + core.count());
+  check('远程清空被拒绝（群历史只能由群主操作）', r.code === 403, 'code=' + r.code);
+  core.clear();
+  check('测试内清理后无消息', core.count() === 0, 'count=' + core.count());
 
   console.log('上传入口');
   r = await request(port, 'POST', '/api/upload/init' + T, { name: 'x.txt', size: 3, mime: 'text/plain' });
@@ -177,11 +198,10 @@ function request(port, method, urlPath, body, headers) {
     'code=' + r.code + ' aborts=' + aborts.join(','));
   abortAll = 0;
   r = await request(port, 'POST', '/api/clear' + T, {});
-  check('清空历史会中止所有上传会话', abortAll === 1, 'abortAll=' + abortAll);
+  check('远程清空不会中止上传会话（接口已仅限群主）',
+    r.code === 403 && abortAll === 0, 'code=' + r.code + ' abortAll=' + abortAll);
 
   console.log('下载进度事件（/d/）');
-  const fs = require('fs');
-  const os = require('os');
   const tmpFile = path.join(os.tmpdir(), 'nearsend-test-' + Date.now() + '.bin');
   const size = 1024 * 1024;
   fs.writeFileSync(tmpFile, Buffer.alloc(size, 0x42));
@@ -204,6 +224,11 @@ function request(port, method, urlPath, body, headers) {
   check('收到进度事件', served.length >= 2, 'events=' + served.length);
   const last = served[served.length - 1];
   check('末次事件标记完成', !!last && last.done === true && last.total === size, JSON.stringify(last));
+
+  r = await request(port, 'GET', '/api/history' + T);
+  check('网页历史不泄露群主文件绝对路径',
+    r.json && r.json.messages.every((m) => m.path === undefined),
+    JSON.stringify((r.json && r.json.messages.find((m) => m.path)) || null));
 
   console.log('下载 Range / HEAD');
   const partFile = path.join(os.tmpdir(), 'nearsend-range-' + Date.now() + '.bin');
@@ -258,6 +283,17 @@ function request(port, method, urlPath, body, headers) {
     ws.once('open', resolve);
     ws.once('error', reject);
   });
+  ws.send(JSON.stringify({ t: 'hello', member: { name: '测试手机', color: 'mint', kind: 'phone' } }));
+  await new Promise((r) => setTimeout(r, 300));
+  const welcome = inbox.find((m) => m.t === 'welcome');
+  check('WS hello 返回 welcome', !!welcome && !!welcome.me && !!welcome.me.id);
+  check('首次入群下发成员 key', !!(welcome && welcome.me && welcome.me.key));
+  check('入群后成员列表包含新成员',
+    !!(welcome && welcome.members && welcome.members.some((m) => m.name === '测试手机' && m.online)));
+  const memberId = welcome && welcome.me && welcome.me.id;
+  const memberKey = welcome && welcome.me && welcome.me.key;
+  const MH = { 'x-ns-member': memberId || '', 'x-ns-key': memberKey || '' };
+
   ws.send(JSON.stringify({ t: 'ping', at: 123 }));
   ws.send(JSON.stringify({ t: 'typing', on: true }));
   ws.send(JSON.stringify({ t: 'typing', on: false }));
@@ -276,22 +312,22 @@ function request(port, method, urlPath, body, headers) {
   check('ack 的 id 与落库消息一致', acks.length === 2 && acks[1].id === acks[1].msg.id);
 
   const recallId = acks[0].id;
-  r = await request(port, 'POST', `/api/msg/${recallId}/recall` + T, {});
+  r = await request(port, 'POST', `/api/msg/${recallId}/recall` + T, {}, MH);
   check('2 分钟内可撤回自己发送的消息', r.code === 200 && core.get(recallId).recalled === true,
     `code=${r.code}`);
-  r = await request(port, 'POST', `/api/msg/${recallId}/recall` + T, {});
+  r = await request(port, 'POST', `/api/msg/${recallId}/recall` + T, {}, MH);
   check('撤回后不能再次撤回', r.code === 403, 'code=' + r.code);
   const oldPhone = core.publish({
     id: 'ffffffffffffffff', from: 'phone', kind: 'text', text: 'old',
-    status: 'ok', ts: Date.now() - 3 * 60 * 1000,
+    status: 'ok', ts: Date.now() - 3 * 60 * 1000, uid: memberId, author: { id: memberId, name: '测试手机' },
   });
-  r = await request(port, 'POST', `/api/msg/${oldPhone.id}/recall` + T, {});
+  r = await request(port, 'POST', `/api/msg/${oldPhone.id}/recall` + T, {}, MH);
   check('超过 2 分钟不能撤回', r.code === 403, 'code=' + r.code);
   const pcMsg = core.publish({
     id: 'eeeeeeeeeeeeee01', from: 'pc', kind: 'text', text: 'pc',
     status: 'ok',
   });
-  r = await request(port, 'POST', `/api/msg/${pcMsg.id}/recall` + T, {});
+  r = await request(port, 'POST', `/api/msg/${pcMsg.id}/recall` + T, {}, MH);
   check('手机不能撤回电脑发送的消息', r.code === 403, 'code=' + r.code);
 
   const victim = acks[1].id;
@@ -300,7 +336,34 @@ function request(port, method, urlPath, body, headers) {
   check('WS 删除消息同样会中止上传会话并落库删除',
     aborts.includes(victim) && !core.get(victim),
     'aborts=' + aborts.join(','));
+
+  ws.send(JSON.stringify({ t: 'seen', ids: [pcMsg.id] }));
+  await new Promise((r2) => setTimeout(r2, 120));
+  check('成员已读回执写入 seenBy', Array.isArray(core.get(pcMsg.id).seenBy)
+    && core.get(pcMsg.id).seenBy.includes(memberId), JSON.stringify(core.get(pcMsg.id).seenBy));
+
+  ws.send(JSON.stringify({ t: 'rename', name: '测试手机二号' }));
+  await new Promise((r2) => setTimeout(r2, 120));
+  check('成员可以改自己的昵称', !!(inbox.find((m) => m.t === 'me' && m.me.name === '测试手机二号')));
+  check('改名后成员列表同步', room.roster(new Set([memberId])).some((m) => m.name === '测试手机二号'));
+
   ws.close();
+
+  console.log('移出与恢复');
+  const kicked = room.kick(memberId);
+  check('移出后成员从名单消失', !!kicked && !room.member(memberId));
+  check('移出后进入黑名单', room.blockedList().some((m) => m.id === memberId));
+  let blockedErr = null;
+  try {
+    room.join({ id: memberId, key: memberKey, name: '测试手机二号' });
+  } catch (err) {
+    blockedErr = err;
+  }
+  check('被移出的身份不能直接回来', blockedErr && blockedErr.code === 'blocked');
+  check('恢复后成员身份回到名单', room.unblock(memberId) && !!room.member(memberId));
+  const restored = room.join({ id: memberId, key: memberKey, name: '测试手机二号' });
+  check('恢复后原 key 可以重新入群', restored.member.id === memberId,
+    restored && restored.member && restored.member.id);
 
   console.log('上传 /done 幂等');
   const upDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nearsend-up-'));
@@ -382,7 +445,28 @@ function request(port, method, urlPath, body, headers) {
     'count=' + st2.messages().length);
   fs.rmSync(clearedDir, { recursive: true, force: true });
 
+  console.log('群主设置');
+  server.setRoomName('验收群');
+  check('群名修改落库', room.data.name === '验收群');
+  check('群名修改产生系统消息',
+    core.history().some((m) => m.kind === 'system' && m.text.includes('验收群')));
+  server.setHostName('验收主机');
+  check('群主昵称修改落库', room.host.name === '验收主机');
+  server.setLocked(true);
+  let lockErr = null;
+  try {
+    room.join({ name: '锁定后新人' }, { locked: room.data.locked });
+  } catch (err) {
+    lockErr = err;
+  }
+  check('锁定后新成员不能加入', lockErr && lockErr.code === 'locked');
+  const existing = room.join({ id: memberId, key: memberKey, name: '测试手机二号' });
+  check('锁定不影响已有成员凭 key 回来', existing.member.id === memberId);
+  server.setLocked(false);
+  check('解锁后恢复新成员加入', !!room.join({ name: '解锁后新人' }).member);
+
   server.stop();
+  fs.rmSync(roomDir, { recursive: true, force: true });
   console.log(failures ? `\n${failures} 项失败` : '\n全部通过');
   process.exit(failures ? 1 : 0);
 })().catch((err) => {

@@ -1725,3 +1725,823 @@ select:focus {
   margin: 6px 4px 2px;
 }
 
+
+/* ============================================================
+   群聊：布局与消息作者
+   ============================================================ */
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+.stage {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.roombar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  z-index: 6;
+}
+
+.rb-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 1px 4px;
+  margin-left: -4px;
+}
+
+.rb-main:hover {
+  background: var(--surface-2);
+}
+
+.rb-name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rb-sub {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rb-stack {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding-left: 4px;
+}
+
+.rb-stack .av {
+  width: 22px;
+  height: 22px;
+  flex-basis: 22px;
+  font-size: 9.5px;
+  margin-left: -6px;
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+.rb-stack .av:first-child {
+  margin-left: 0;
+}
+
+.rbmore {
+  margin-left: -4px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+}
+
+.roombar .ibtn {
+  width: 26px;
+  height: 26px;
+}
+
+.qr-room {
+  margin: 0 0 -4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+}
+
+#app[data-mode='compact'] .qr-room {
+  font-size: 14px;
+}
+
+#app[data-mode='compact'] .qr-hint {
+  display: block;
+  font-size: 10.5px;
+  margin-top: -8px;
+}
+
+/* 头像 */
+
+.av {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  background: #e2e8f0;
+  color: #1e293b;
+  user-select: none;
+}
+
+.av.sm {
+  width: 21px;
+  height: 21px;
+  flex-basis: 21px;
+  font-size: 9.5px;
+}
+
+.av[data-c='sky'] { background: #dbeafe; color: #1e3a8a; }
+.av[data-c='mint'] { background: #d1fae5; color: #065f46; }
+.av[data-c='amber'] { background: #fef3c7; color: #92400e; }
+.av[data-c='rose'] { background: #ffe4e6; color: #9f1239; }
+.av[data-c='violet'] { background: #ede9fe; color: #5b21b6; }
+.av[data-c='lime'] { background: #ecfccb; color: #3f6212; }
+.av[data-c='coral'] { background: #ffedd5; color: #9a3412; }
+.av[data-c='slate'] { background: #e2e8f0; color: #334155; }
+
+.who[data-c='sky'] { color: #93c5fd; }
+.who[data-c='mint'] { color: #6ee7b7; }
+.who[data-c='amber'] { color: #fcd34d; }
+.who[data-c='rose'] { color: #fda4af; }
+.who[data-c='violet'] { color: #c4b5fd; }
+.who[data-c='lime'] { color: #bef264; }
+.who[data-c='coral'] { color: #fdba74; }
+.who[data-c='slate'] { color: var(--ink-2); }
+
+:root[data-theme='light'] .who[data-c='sky'] { color: #1d4ed8; }
+:root[data-theme='light'] .who[data-c='mint'] { color: #047857; }
+:root[data-theme='light'] .who[data-c='amber'] { color: #b45309; }
+:root[data-theme='light'] .who[data-c='rose'] { color: #be123c; }
+:root[data-theme='light'] .who[data-c='violet'] { color: #6d28d9; }
+:root[data-theme='light'] .who[data-c='lime'] { color: #4d7c0f; }
+:root[data-theme='light'] .who[data-c='coral'] { color: #c2410c; }
+
+/* 消息结构 */
+
+.msg {
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.msg .av {
+  margin-top: 1px;
+}
+
+.msg.cont .av.gone {
+  visibility: hidden;
+}
+
+.mcol {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  max-width: 76%;
+}
+
+.msg.pc .mcol {
+  align-items: flex-end;
+  max-width: 80%;
+}
+
+.bwrap {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.who {
+  max-width: 100%;
+  margin: 0 0 3px 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg .bubble {
+  max-width: 100%;
+}
+
+.msg.cont .bubble {
+  border-top-left-radius: 10px;
+}
+
+.msg.pc.cont .bubble {
+  border-top-right-radius: 10px;
+}
+
+.msg .bubble .at {
+  font-weight: 600;
+  color: #93c5fd;
+}
+
+:root[data-theme='light'] .msg .bubble .at {
+  color: #1d4ed8;
+}
+
+.msg.pc .bubble .at {
+  color: #fff;
+}
+
+.msg.flash .bubble {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.quote {
+  cursor: pointer;
+}
+
+/* 回复栏 */
+
+.replybar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  animation: dropIn var(--d2) var(--ease);
+}
+
+.replybar .rline {
+  width: 3px;
+  height: 26px;
+  border-radius: 2px;
+  background: var(--accent);
+  flex: 0 0 3px;
+}
+
+.replybar .rtxt {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replybar .rtxt b {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* ============================================================
+   群成员侧栏
+   ============================================================ */
+
+.side-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 28;
+  background: rgba(0, 0, 0, 0.48);
+  animation: fadeIn var(--d2) var(--ease);
+}
+
+.room-side {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: 286px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  box-shadow: -22px 0 60px rgba(0, 0, 0, 0.35);
+  transform: translateX(102%);
+  visibility: hidden;
+  transition: transform 220ms var(--ease), visibility 220ms;
+}
+
+#app.side-open .room-side {
+  transform: none;
+  visibility: visible;
+}
+
+#app[data-mode='full'][data-view='chat'] .room-side {
+  position: relative;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  width: 258px;
+  flex: 0 0 258px;
+  transform: none;
+  visibility: visible;
+  box-shadow: none;
+}
+
+#app[data-view='settings'] .room-side,
+#app[data-view='connect'] .room-side {
+  display: none;
+}
+
+#app[data-mode='full'] .side-scrim {
+  display: none !important;
+}
+
+.rs-head {
+  flex: 0 0 auto;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.rs-head b {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+#app[data-mode='full'] .rs-close {
+  display: none;
+}
+
+.rs-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 12px 18px;
+}
+
+.rs-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 2px 12px;
+}
+
+.rs-mark {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  background: rgba(127, 127, 127, 0.1);
+  border: 1px solid var(--line);
+}
+
+:root[data-theme='light'] .rs-mark {
+  background: rgba(37, 99, 235, 0.08);
+  border-color: rgba(37, 99, 235, 0.14);
+}
+
+.rs-card > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rs-card b {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rs-card span {
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.rs-invite {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 11px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.rs-invite img {
+  width: 126px;
+  height: 126px;
+  padding: 5px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.rs-invite > span {
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.rs-copy {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  padding: 3px 8px;
+  border-radius: 5px;
+}
+
+.rs-copy:hover {
+  background: var(--surface-3);
+}
+
+.rs-sec {
+  padding: 12px 4px 5px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+}
+
+.rs-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 6px 7px 4px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background var(--d1);
+}
+
+.rs-row:hover {
+  background: var(--surface-2);
+}
+
+.rs-row .av {
+  opacity: 0.55;
+}
+
+.rs-row.on .av {
+  opacity: 1;
+}
+
+.rs-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rs-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.rs-line b {
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rs-badge {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1.7;
+  color: var(--ink-3);
+  background: var(--surface-3);
+}
+
+.rs-badge.host {
+  color: var(--accent);
+  background: rgba(127, 127, 127, 0.13);
+}
+
+.rs-sub {
+  font-size: 9.5px;
+  color: var(--ink-3);
+}
+
+.rs-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 5px;
+  border-radius: 50%;
+  background: var(--line-2);
+}
+
+.rs-dot.on {
+  background: var(--ok);
+}
+
+.rs-row.banned {
+  cursor: default;
+  opacity: 0.8;
+}
+
+.rs-banned {
+  flex: 1;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  text-decoration: line-through;
+}
+
+.rs-restore {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent);
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: var(--surface-3);
+}
+
+.rs-foot {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 7px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.rs-btn {
+  flex: 1;
+  height: 30px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.rs-btn:hover {
+  color: var(--ink);
+  background: var(--surface-3);
+}
+
+/* ============================================================
+   弹窗 / @ / 小窗适配
+   ============================================================ */
+
+.modal-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(0, 0, 0, 0.52);
+  animation: fadeIn var(--d2) var(--ease);
+}
+
+.modal {
+  width: min(100%, 330px);
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--shadow-3);
+  animation: riseIn var(--d3) var(--ease);
+  overflow: hidden;
+}
+
+.modal-head {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-head b {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.invite-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+}
+
+.invite-qr {
+  width: 206px;
+  height: 206px;
+  padding: 9px;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+
+.invite-qr img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 8px;
+  image-rendering: pixelated;
+}
+
+.invite-tip {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.invite-link {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.invite-link code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--ink-3);
+  user-select: text;
+}
+
+.prompt-body {
+  display: flex;
+  gap: 8px;
+  padding: 14px 16px 16px;
+}
+
+.prompt-body input {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  outline: none;
+  user-select: text;
+}
+
+.prompt-body input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(127, 127, 127, 0.12);
+}
+
+/* @ 选择 */
+
+.mention-pop {
+  position: absolute;
+  left: 14px;
+  bottom: 58px;
+  z-index: 24;
+  width: 232px;
+  max-height: 236px;
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: 11px;
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--shadow-3);
+  animation: riseIn var(--d2) var(--ease);
+}
+
+.mitem {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 7px;
+  border-radius: 7px;
+  text-align: left;
+  font-size: 11.5px;
+  color: var(--ink);
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+
+.mitem:hover,
+.mitem.on {
+  background: var(--surface-3);
+}
+
+.mitem .mname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mitem .av {
+  flex: 0 0 auto;
+}
+
+.mitem i {
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(127, 127, 127, 0.13);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+/* 小窗下侧栏占满高度，宽屏常驻 */
+
+@media (max-width: 520px) {
+  .rb-sub {
+    max-width: 180px;
+  }
+
+  .room-side {
+    width: min(86%, 286px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .room-side,
+  .modal,
+  .mention-pop {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+#app {
+  position: relative;
+}
+
+/* 消息较少时贴着输入框，避免内容悬在顶部 */
+.chat::before {
+  content: '';
+  flex: 1 0 0;
+  min-height: 0;
+}
+
+/* 让原生表单控件跟随主题，避免按钮/滚动条在深色下闪白 */
+:root {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+#app[data-mode='full'][data-view='chat'] #rbMembers {
+  display: none;
+}
+
+/* 群成员抽屉打开时，确认条/连接动画/提示仍要在最上层 */
+.confirmbar {
+  z-index: 90;
+}
+
+.flash {
+  z-index: 94;
+}
+
+.toast {
+  z-index: 97;
+}

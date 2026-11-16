@@ -13,21 +13,31 @@ const THEME = process.env.SHOT_THEME || 'dark';
 const QR_FILE = path.join(os.tmpdir(), 'NearSend-qr-demo.png');
 const NOW = Date.now();
 
+const fakeMembers = [
+  { id: 'host', name: '我的电脑', color: 'sky', kind: 'desktop', isHost: true, online: true, joinedAt: NOW - 86400000, lastSeen: NOW },
+  { id: 'm1', name: '李雷', color: 'mint', kind: 'phone', isHost: false, online: true, joinedAt: NOW - 7200000, lastSeen: NOW },
+  { id: 'm2', name: '韩梅梅', color: 'rose', kind: 'desktop', isHost: false, online: true, joinedAt: NOW - 5400000, lastSeen: NOW },
+  { id: 'm3', name: '实习生小林', color: 'amber', kind: 'tablet', isHost: false, online: false, joinedAt: NOW - 172800000, lastSeen: NOW - 3600000 },
+];
+const a = (id, name, color, kind) => ({ id, name, color, kind });
+
 const fakeMessages = [
-  { id: 'a1', ts: NOW - 900000, from: 'phone', kind: 'text', text: '到公司了，会议室改到 10 点半' },
-  { id: 'a2', ts: NOW - 880000, from: 'pc', kind: 'text', text: '收到，我把复盘材料先发你' },
+  { id: 'sys1', ts: NOW - 1000000, kind: 'system', from: 'system', status: 'ok', text: '群聊已创建，扫码邀请成员' },
+  { id: 'a1', ts: NOW - 900000, from: 'phone', uid: 'm1', author: a('m1', '李雷', 'mint', 'phone'), kind: 'text', text: '到公司了，会议室改到 10 点半' },
+  { id: 'a2', ts: NOW - 880000, from: 'pc', uid: 'host', author: a('host', '我的电脑', 'sky', 'desktop'), kind: 'text', status: 'ok', seenBy: ['m1', 'm2'], text: '收到，我把复盘材料先发群里' },
   {
-    id: 'a3', ts: NOW - 860000, from: 'pc', kind: 'text', status: 'ok', seen: NOW - 850000,
-    text: '季度复盘.pdf 和三季度的原始数据都在压缩包里，你看下有没有漏的',
+    id: 'a3', ts: NOW - 860000, from: 'phone', uid: 'm2', author: a('m2', '韩梅梅', 'rose', 'desktop'), kind: 'text', status: 'ok',
+    text: '@我的电脑 季度复盘.pdf 和三季度的原始数据都在压缩包里，你看下有没有漏的',
+    mentions: ['host'],
   },
   {
-    id: 'a4', ts: NOW - 840000, from: 'pc', kind: 'file', status: 'ok',
+    id: 'a4', ts: NOW - 840000, from: 'pc', uid: 'host', author: a('host', '我的电脑', 'sky', 'desktop'), kind: 'file', status: 'ok',
     name: '季度复盘-2026Q3.pdf', size: 4213862, path: path.join(ROOT, 'assets', 'icon.png'), mime: 'application/pdf',
   },
-  { id: 'a5', ts: NOW - 820000, from: 'phone', kind: 'text', text: '收到了，数据我下午核对' },
-  { id: 'a6', ts: NOW - 300000, from: 'phone', kind: 'file', status: 'ok', name: '现场照片打包.zip', size: 88234521 },
-  { id: 'a7', ts: NOW - 120000, from: 'phone', kind: 'text', text: '原始视频有点大，直接传了' },
-  { id: 'a8', ts: NOW - 40000, from: 'phone', kind: 'file', status: 'uploading', progress: 0.46, name: '录屏 2026-11-06.mp4', size: 348912033 },
+  { id: 'a5', ts: NOW - 820000, from: 'phone', uid: 'm1', author: a('m1', '李雷', 'mint', 'phone'), kind: 'text', text: '韩梅梅 的表格我下午核对完发出来' },
+  { id: 'a6', ts: NOW - 300000, from: 'phone', uid: 'm1', author: a('m1', '李雷', 'mint', 'phone'), kind: 'file', status: 'ok', name: '现场照片打包.zip', size: 88234521 },
+  { id: 'a7', ts: NOW - 120000, from: 'pc', uid: 'host', author: a('host', '我的电脑', 'sky', 'desktop'), kind: 'text', status: 'ok', seenBy: ['m1'], text: '原始视频有点大，分片直传，群里的成员都能下载。' },
+  { id: 'a8', ts: NOW - 40000, from: 'phone', uid: 'm2', author: a('m2', '韩梅梅', 'rose', 'desktop'), kind: 'file', status: 'uploading', progress: 0.46, name: '录屏 2026-11-06.mp4', size: 348912033 },
 ];
 
 ipcMain.handle('state', () => ({
@@ -48,13 +58,24 @@ ipcMain.handle('state', () => ({
   port: 8899,
   nics: [{ name: 'WLAN', address: '192.168.5.4' }],
   nic: 'WLAN',
-  version: '1.0.0',
+  version: '2.2.0',
   firewall: true,
   pinned: true,
   unread: 0,
   isFull: MODE === 'full',
   messages: process.env.SHOT_EMPTY ? [] : fakeMessages,
-  devices: process.env.SHOT_EMPTY ? [] : ['iPhone · Safari'],
+  devices: process.env.SHOT_EMPTY ? [] : ['李雷', '韩梅梅'],
+  room: {
+    name: '产品组 · 局域网',
+    locked: false,
+    createdAt: NOW - 86400000,
+    host: { id: 'host', name: '我的电脑', color: 'sky', kind: 'desktop' },
+    memberCount: fakeMembers.length,
+    onlineCount: 3,
+  },
+  members: process.env.SHOT_EMPTY ? [] : fakeMembers,
+  blocked: [],
+  me: { id: 'host', name: '我的电脑', color: 'sky', kind: 'desktop' },
 }));
 
 app.whenReady().then(async () => {

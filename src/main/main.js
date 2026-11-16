@@ -12,6 +12,7 @@ const { Store, kindOf } = require('./store');
 const { Vault } = require('./crypto');
 const { Uploads } = require('./uploads');
 const { LanServer, MIME } = require('./server');
+const { Room } = require('./room');
 const autostart = require('./autostart');
 
 // 提示音要在窗口从未被点击时也能出声
@@ -34,6 +35,7 @@ let server = null;
 let store = null;
 let vault = null;
 let uploads = null;
+let room = null;
 let quitting = false;
 let isFull = false;
 let pinned = true;
@@ -105,6 +107,12 @@ function windowBg() {
 
 // ---------- core：消息真源，桌面 IPC 与手机 WS 共用 ----------
 
+function hostAuthor() {
+  return room
+    ? { id: 'host', name: room.host.name, color: room.host.color, kind: 'desktop' }
+    : { id: 'host', name: '我的电脑', color: 'sky', kind: 'desktop' };
+}
+
 const core = {
   version: app.getVersion(),
   history: () => store.messages(),
@@ -112,11 +120,16 @@ const core = {
   getTheme: () => config.get('theme'),
   getUrl: () => currentUrl,
   publish(partial) {
-    const msg = store.add(partial);
+    const input = Object.assign({}, partial);
+    if (input.from === 'pc' && !input.uid) {
+      input.uid = 'host';
+      input.author = hostAuthor();
+    }
+    const msg = store.add(input);
     if (server) server.broadcast({ t: 'msg', msg });
     send('ev', { t: 'msg', msg });
     // 上传中的文件只通知一次，等收完（status 变 ok）再提醒，避免传一半就报「收到」
-    if (partial.from === 'phone' && partial.status !== 'uploading'
+    if (input.from === 'phone' && input.kind !== 'system' && input.status !== 'uploading'
       && win && (!win.isVisible() || !win.isFocused())) {
       setUnread(unread + 1);
       notify(msg);
@@ -130,7 +143,7 @@ const core = {
     if (!msg) return null;
     if (server) server.broadcast({ t: 'msg:update', id, patch: changes });
     send('ev', { t: 'msg:update', id, patch: changes });
-    if (!wasOk && changes.status === 'ok' && msg.from === 'phone'
+    if (!wasOk && changes.status === 'ok' && msg.from === 'phone' && msg.kind !== 'system'
       && win && (!win.isVisible() || !win.isFocused())) {
       setUnread(unread + 1);
       notify(msg);
@@ -335,12 +348,14 @@ function notify(msg) {
   const body = msg.kind === 'text'
     ? msg.text || ''
     : `${msg.kind === 'image' ? '[图片]' : '[文件]'} ${msg.name || ''}`;
+  const who = msg.author && msg.author.name ? `${msg.author.name}：` : '';
+  const at = Array.isArray(msg.mentions) && msg.mentions.includes('host') ? '有人@你 · ' : '';
   try {
     tray.displayBalloon({
       iconType: 'custom',
       icon: nativeImage.createFromPath(asset('icon.png')),
-      title: '近传',
-      content: String(body).replace(/\s+/g, ' ').slice(0, 60) || '收到一条新消息',
+      title: room ? room.data.name : '近传',
+      content: `${at}${who}${String(body).replace(/\s+/g, ' ')}`.slice(0, 70) || '收到一条新消息',
       noSound: true,
     });
   } catch (err) {
@@ -466,6 +481,8 @@ function publishFiles(paths) {
       out.push(
         core.publish({
           from: 'pc',
+          uid: 'host',
+          author: hostAuthor(),
           kind: kindOf(MIME[ext] || '', p),
           name: path.basename(p),
           size: st.size,
@@ -504,7 +521,11 @@ function statePayload() {
     isFull,
     unread,
     messages: store ? store.messages() : [],
-    devices: server ? [...server.clients].map((c) => c.device) : [],
+    devices: server ? server.onlineNames() : [],
+    room: server ? server.snapshot().room : null,
+    members: server ? server.snapshot().members : [],
+    blocked: server ? server.snapshot().blocked : [],
+    me: room ? { id: 'host', name: room.host.name, color: room.host.color, kind: 'desktop' } : null,
   };
 }
 
@@ -513,19 +534,32 @@ function statePayload() {
 function registerIpc() {
   ipcMain.handle('state', () => statePayload());
 
-  ipcMain.on('send-text', (_e, text) => {
+  ipcMain.on('send-text', (_e, payload) => {
+    const text = typeof payload === 'string' ? payload : (payload && payload.text);
+    const reply = payload && typeof payload === 'object' ? payload.reply : null;
     // 和手机端保持一致，避免一次粘贴把超大文本塞进历史并广播给手机
     const value = String(text || '').trim().slice(0, 20000);
-    if (value) core.publish({ from: 'pc', kind: 'text', text: value });
+    if (value) {
+      core.publish({
+        from: 'pc',
+        uid: 'host',
+        author: hostAuthor(),
+        kind: 'text',
+        text: value,
+        mentions: server ? server.mentionsFor(value, 'host') : [],
+        reply: server && reply ? server.cleanReply(reply) : undefined,
+      });
+    }
   });
 
   ipcMain.on('typing', (_e, on) => {
-    if (server) server.broadcast({ t: 'typing', from: 'pc', on: !!on });
+    if (server) server.hostTyping(!!on);
   });
 
   ipcMain.handle('recall-msg', (_e, id) => {
     const msg = core.get(id);
-    if (!msg || msg.from !== 'pc' || msg.status !== 'ok' || msg.recalled
+    const mine = msg && (msg.uid === 'host' || (!msg.uid && msg.from === 'pc'));
+    if (!mine || msg.status !== 'ok' || msg.recalled
       || Date.now() - Number(msg.ts || 0) > RECALL_MS) {
       return false;
     }
@@ -577,14 +611,10 @@ function registerIpc() {
     core.remove(id, !!purge);
   });
 
-  // 电脑端读到手机消息后回执「已读」：手机气泡上会出现双勾
+  // 群主读到消息后回执「已读」：作者气泡上会出现已读
   ipcMain.on('seen', (_e, ids) => {
-    if (!Array.isArray(ids)) return;
-    const now = Date.now();
-    for (const id of ids.slice(0, 400)) {
-      const msg = core.get(id);
-      if (msg && msg.from === 'phone' && !msg.seen) core.patch(id, { seen: now }, true);
-    }
+    if (!Array.isArray(ids) || !server) return;
+    server.markSeen('host', ids.slice(0, 400));
   });
   ipcMain.on('copy-text', (_e, text) => clipboard.writeText(String(text || '')));
   ipcMain.handle('copy-image', (_e, p) => {
@@ -656,6 +686,7 @@ function registerIpc() {
     store.clear(!!purgeFiles);
     if (server) server.broadcast({ t: 'clear' });
     send('ev', { t: 'clear' });
+    setUnread(0);
     return true;
   });
 
@@ -672,6 +703,43 @@ function registerIpc() {
 
   ipcMain.handle('settings:open-save-dir', () => shell.openPath(config.get('saveDir')));
   ipcMain.handle('settings:open-data-dir', () => shell.openPath(app.getPath('userData')));
+
+  // ---------- 群聊管理（只有本机桌面端能调用） ----------
+
+  ipcMain.handle('room:snapshot', () => (server ? server.snapshot() : null));
+
+  ipcMain.handle('room:rename', (_e, name) => {
+    if (server) server.setRoomName(name);
+    return server ? server.snapshot() : null;
+  });
+
+  ipcMain.handle('room:host-name', (_e, name) => {
+    if (server) server.setHostName(name);
+    return server ? server.snapshot() : null;
+  });
+
+  ipcMain.handle('room:lock', (_e, locked) => {
+    if (server) server.setLocked(!!locked);
+    return server ? server.snapshot() : null;
+  });
+
+  ipcMain.handle('room:kick', (_e, id) => {
+    if (server) {
+      try {
+        server.kick(String(id || ''));
+      } catch (err) {
+        console.error('[room] kick', err.message);
+      }
+    }
+    return server ? server.snapshot() : null;
+  });
+
+  ipcMain.handle('room:unblock', (_e, id) => {
+    if (server) server.unblock(String(id || ''));
+    return server ? server.snapshot() : null;
+  });
+
+  ipcMain.handle('room:invite', async () => (server ? server.invite() : null));
 
   ipcMain.on('mode', (_e, mode) => setMode(mode === 'full'));
   ipcMain.on('hide', () => hideWindow());
@@ -793,13 +861,14 @@ async function boot() {
 
   vault = new Vault(app.getPath('userData')).init();
   store = new Store(path.join(app.getPath('userData'), 'messages.jsonl'), vault).load();
+  room = new Room(path.join(app.getPath('userData'), 'room.json')).load();
   // 上次进程退出时没传完的文件，服务端已没有上传会话可供续传：
   // 启动时统一标成失败，否则气泡会永远停在「上传中 37%」。
   for (const m of store.messages()) {
     if (m.status === 'uploading') store.patch(m.id, { status: 'error' }, true);
   }
   uploads = new Uploads(() => config.get('saveDir'));
-  server = new LanServer({ core, uploads, token: config.get('token') });
+  server = new LanServer({ core, uploads, token: config.get('token'), room });
 
   const port = await server.start(config.get('port'));
   if (port !== config.get('port')) config.patch({ port });
@@ -807,12 +876,15 @@ async function boot() {
   createWindow();
   createTray();
   registerIpc();
-  server.on('presence', (devices) => send('ev', { t: 'presence', devices }));
-  server.on('typing', (p) => send('ev', { t: 'typing', from: 'phone', on: !!p.on }));
+  server.on('room', (p) => send('ev', { t: 'room', room: p.room, members: p.members, blocked: p.blocked }));
+  server.on('typing', (p) => send('ev', { t: 'typing', member: p.member, on: !!p.on }));
   // 手机在下载电脑上的文件时，把进度推给界面
   server.on('served', (p) => send('ev', {
     t: 'download', id: p.id, sent: p.sent, total: p.total, done: p.done, aborted: p.aborted,
   }));
+  if (room.created) {
+    server.publishSystem('群聊已创建，扫码邀请成员', { event: 'created' });
+  }
   refreshUrl(true);
   setTimeout(checkFirewall, 800);
 
