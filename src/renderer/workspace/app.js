@@ -1,4 +1,4 @@
-/* 近传 · 远程工位 — UI 原型（仅设计演示，不含真实远程能力） */
+/* 近传 · 远程工位 — 统一工作台 */
 'use strict';
 
 /* ---------- icons ---------- */
@@ -261,7 +261,7 @@ function peerToDevice(peer) {
     versionOk: true,
     ip: peer.ip,
     fingerprint: '',
-    lastSeen: peer.self ? '本机' : '刚刚',
+    lastSeen: peer.self ? '本机' : peer.online ? '刚刚' : (peer.lastSeen ? new Date(peer.lastSeen).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'),
     lastSession: '—',
     notes: peer.self ? '本机被控预览：用于单机验证屏幕与输入。' : '局域网发现的近传设备；首次连接需要 6 位授权码。',
     sessionHolder: null,
@@ -724,6 +724,10 @@ async function init() {
   if (gsIcon) gsIcon.innerHTML = icon('search', 14);
   const agentBtn = document.getElementById('btnAgentPreview');
   if (agentBtn) agentBtn.innerHTML = icon('laptop');
+  try {
+    const saved = JSON.parse(localStorage.getItem('ns-session-history') || '[]');
+    if (Array.isArray(saved) && saved.length) SESSION_HISTORY.unshift(...saved);
+  } catch {}
   bindShell();
   bindMain();
   bindSession();
@@ -792,6 +796,7 @@ function handleWorkspaceEvent(payload) {
     state.remote = payload.state;
     mergeRemoteState(payload.state);
     if (state.agent) renderAgent();
+    if (state.view === 'grants') renderGrants();
     return;
   }
   if (payload.t === 'session') {
@@ -1019,51 +1024,63 @@ function renderSessions() {
 }
 
 /* ---------- grants view ---------- */
+function grantRemainLabel(g) {
+  if (!g.expiresAt) return '长期';
+  const minutes = Math.max(0, Math.ceil((g.expiresAt - Date.now()) / 60000));
+  return minutes >= 60 ? `${Math.ceil(minutes / 60)} 小时` : `${minutes} 分钟`;
+}
+function grantPermText(perms) {
+  if (!perms) return '—';
+  return Object.keys(perms).filter((k) => perms[k]).map((k) => PERM_LABEL[k] || k).join('、') || '只读';
+}
 function renderGrants() {
   const main = document.getElementById('main');
-  const visible = GRANTS.filter((g) => deviceById(g.deviceId) && (DEMO_ENABLED || !deviceById(g.deviceId).demo));
-  const list = visible.filter((g) => g.scope === state.grantTab);
-  const count = (status) => visible.filter((g) => g.status === status).length;
+  const inbound = Array.isArray(state.remote?.grants) ? state.remote.grants : [];
+  const outboundDevice = state.session?.grant ? deviceById(state.session.deviceId) : null;
+  const outbound = state.session?.grant && outboundDevice ? [{ ...state.session.grant, deviceName: outboundDevice.name, deviceHost: outboundDevice.host }] : [];
+  const tab = state.grantTab === 'managed' ? 'managed' : 'obtained';
+  const list = tab === 'managed' ? inbound : outbound;
+  const all = [...inbound, ...outbound];
+  const adminCount = all.filter((g) => g.role === 'admin').length;
   main.innerHTML = `
     <div class="page-head">
-      <div class="page-title"><h1>授权</h1><p>本机缓存 · 以工位电脑的授权列表为准 · 当前内测版以 6 位码配对为主</p></div>
-      <div class="page-actions"><button class="btn" data-action="refresh-grants">${icon('refresh', 14)} 同步</button></div>
+      <div class="page-title"><h1>授权</h1><p>本机授权与当前控制端授权 · 以工位电脑为准 · 不上传</p></div>
+      <div class="page-actions"><button class="btn" data-action="refresh-grants">${icon('refresh', 14)} 刷新</button></div>
     </div>
     <div class="summary-strip">
-      <button class="summary-chip warn" data-action="grant-filter" data-value="pending"><b>${count('待处理')}</b> 待处理</button>
-      <button class="summary-chip" data-action="grant-filter" data-value="active"><b>${count('有效')}</b> 有效</button>
-      <button class="summary-chip danger" data-action="grant-filter" data-value="expiring"><b>${count('即将到期') + count('临时')}</b> 即将到期</button>
-      <button class="summary-chip" data-action="grant-filter" data-value="expired"><b>${count('已过期')}</b> 已过期</button>
+      <span class="summary-chip"><b>${inbound.length}</b> 本机授权控制端</span>
+      <span class="summary-chip"><b>${outbound.length}</b> 当前获得的授权</span>
+      <span class="summary-chip ${adminCount ? 'warn' : ''}"><b>${adminCount}</b> 管理员临时</span>
+      <span class="summary-chip"><b>0</b> 待处理</span>
     </div>
     <div class="card">
       <div class="card-head">
         <div class="seg" role="tablist">
-          <button class="${state.grantTab === 'obtained' ? 'active' : ''}" data-action="grant-tab" data-value="obtained">我获得的</button>
-          <button class="${state.grantTab === 'managed' ? 'active' : ''}" data-action="grant-tab" data-value="managed">我管理的</button>
+          <button class="${tab === 'obtained' ? 'active' : ''}" data-action="grant-tab" data-value="obtained">我获得的</button>
+          <button class="${tab === 'managed' ? 'active' : ''}" data-action="grant-tab" data-value="managed">控制本机的控制端</button>
         </div>
         <span class="muted" style="margin-left:auto;font-size:10px">${list.length} 条</span>
       </div>
       <div class="table-wrap">
         <table class="data">
-          <thead><tr><th>设备</th><th>控制端</th><th>关系</th><th>权限摘要</th><th>到期</th><th>状态</th><th>最近使用</th><th></th></tr></thead>
+          <thead><tr><th>对象</th><th>角色</th><th>权限</th><th>到期</th><th>操作</th></tr></thead>
           <tbody>
-            ${list.map((g) => {
-              const d = deviceById(g.deviceId);
-              return `<tr data-action="open-grant" data-grant-id="${g.id}">
-                <td><span class="cell-main">${esc(d?.name || '—')}</span><span class="cell-sub">${esc(d?.host || '')}</span></td>
-                <td>${esc(g.controller)}</td>
-                <td><span class="tag ${g.type === '管理员' ? 'admin' : ''}">${esc(g.type)}</span></td>
-                <td>${g.perms.slice(0, 3).map((k) => PERM_LABEL[k]).join('、')}${g.perms.length > 3 ? ` +${g.perms.length - 3}` : ''}</td>
-                <td><span class="tag ${expiryClass(g.expirySeconds)}">${esc(g.expiryLabel)}</span></td>
-                <td><span class="tag ${g.status === '临时' ? 'admin' : g.status === '已过期' ? 'red' : g.status === '即将到期' ? 'admin' : 'ok'}">${esc(g.status)}</span></td>
-                <td>${esc(g.lastUsed)}</td>
-                <td><div class="table-actions"><button class="icon-btn" data-action="open-grant" data-grant-id="${g.id}" title="详情">${icon('chevron', 14)}</button></div></td>
+            ${list.length ? list.map((g) => {
+              const isInbound = tab === 'managed';
+              return `<tr>
+                <td><span class="cell-main">${esc(isInbound ? (g.name || g.controllerId) : g.deviceName)}</span><span class="cell-sub">${esc(isInbound ? '控制端设备' : (g.deviceHost || ''))}</span></td>
+                <td><span class="tag ${g.role === 'admin' ? 'admin' : ''}">${g.role === 'admin' ? '管理员临时' : '我的设备'}</span></td>
+                <td>${esc(grantPermText(g.permissions))}</td>
+                <td><span class="tag ${g.role === 'admin' ? 'admin' : 'ok'}">${esc(grantRemainLabel(g))}</span></td>
+                <td><div class="table-actions">${isInbound
+                  ? `<button class="btn btn-sm" data-action="revoke-inbound" data-controller-id="${esc(g.controllerId)}">撤销</button>`
+                  : `<button class="btn btn-sm" data-action="end-outbound">结束会话</button>`}</div></td>
               </tr>`;
-            }).join('') || `<tr><td colspan="8"><div class="table-empty">没有匹配的授权。</div></td></tr>`}
+            }).join('') : `<tr><td colspan="5"><div class="table-empty">${tab === 'managed' ? '还没有控制端被授权控制这台电脑。控制端输入本机 6 位码后会出现在这里。' : '当前没有从本机获得的远程授权；连接设备后这里会显示本次授权的角色、权限与到期时间。'}</div></td></tr>`}
           </tbody>
         </table>
       </div>
-      <div class="card-note">“我管理的”只在工位电脑授予管理授权时出现；控制端不能凭空添加另一个控制端。当前内测版以 6 位码配对为主，完整的 8 小时管理员临时授权/无人值守开关在下一版接入。</div>
+      <div class="card-note">授权存储在对应工位电脑上；本页只显示本机已知的授权。管理员临时支持默认 8 小时，无人值守/剪贴板/文件/录制默认关闭，撤销后立即断开。</div>
     </div>`;
   hydrateIcons(main);
 }
@@ -1218,41 +1235,43 @@ function settingsContent(section) {
   }
   if (section === 'security') {
     return settingsGroup('安全', '本机安全设置；设备端授权以工位电脑为准。', [
-      settingRow('启动 PIN', '打开控制台时需要 6 位 PIN；忘记只能重置本机数据或从备份恢复。', `<button class="btn btn-sm">设置 PIN</button>`),
-      settingRow('自动锁定', '活动会话中不自动锁定，避免画面被遮住。', `<select class="select"><option>15 分钟</option><option>5 分钟</option><option>30 分钟</option><option>从不</option></select>`),
-      settingRow('会话水印', '在远端画面叠加控制端/时间；P2 可选。', switchHtml(false, '会话水印')),
-      settingRow('远程解锁说明', '只支持 Windows 账户密码；PIN、指纹、面容不能远程使用。', `<button class="btn btn-sm">查看说明</button>`),
-      settingRow('清除本地数据', '删除设备列表、授权缓存、会话记录和身份密钥；不影响工位电脑。', `<button class="btn btn-sm" style="color:var(--red);border-color:var(--red-line);background:var(--red-soft)">清除</button>`),
+      settingRow('启动 PIN', '内测版未开放；控制台跟随 Windows 登录会话。', `<span class="tag gray">暂未开放</span>`),
+      settingRow('自动锁定', '内测版未开放；关闭窗口会最小化到托盘。', `<span class="tag gray">暂未开放</span>`),
+      settingRow('会话水印', '内测版未开放。', `<span class="tag gray">暂未开放</span>`),
+      settingRow('远程解锁说明', '安全桌面需要原生 Windows 服务；内测版暂不支持锁屏/UAC 解锁。', `<button class="btn btn-sm" data-action="remote-unlock-help">查看说明</button>`),
+      settingRow('清除本地数据', '内测版未开放；请在关闭应用后手动清理本机数据目录。', `<span class="tag gray">暂未开放</span>`),
     ]);
   }
   if (section === 'storage') {
     return settingsGroup('存储与备份', '本机数据；不集中到服务器。', [
-      settingRow('上次备份', '2026-11-15 18:20 · 2.4 MB · 加密', `<button class="btn btn-sm" data-action="open-backup">创建备份</button>`),
-      settingRow('恢复备份', '恢复会替换本机设备列表和身份；恢复前自动备份当前数据。', `<button class="btn btn-sm" data-action="open-backup">恢复</button>`),
+      settingRow('配置备份', '内测版暂不导出配置；设备授权以工位电脑为准。', `<span class="tag gray">暂未开放</span>`),
+      settingRow('恢复备份', '内测版暂不提供恢复；重装后可重新发现设备并配对。', `<span class="tag gray">暂未开放</span>`),
       settingRow('会话记录保留', '本机会话历史；到期自动清理。', `<select class="select"><option>90 天</option><option>30 天</option><option>180 天</option></select>`),
       settingRow('录制保存目录', '录制默认关闭；开启后保存在本机。', `<span class="muted mono" style="font-size:10px">C:\\Users\\liwei\\Videos\\NearSend</span>`),
       settingRow('审计缓存', '来自设备的审计摘要；完整审计在工位电脑。', `<span class="muted" style="font-size:10px">90 天</span>`),
     ]);
   }
   if (section === 'updates') {
-    return settingsGroup('更新', '每台电脑独立更新；V1 不远程推送 Agent 更新。', [
-      settingRow('控制端版本', '当前 1.0.3 · 最新 1.0.3', `<span class="tag ok">已是最新</span>`),
+    const appVersion = state.remote?.device?.version || '3.0.0';
+    return settingsGroup('更新', '内测版使用离线安装包；不自动更新，也不远程推送 Agent。', [
+      settingRow('控制端版本', `当前 ${appVersion} · 内测通道`, `<span class="tag ok">内测版</span>`),
       settingRow('更新通道', '稳定版；公司内部自用。', `<select class="select"><option>稳定版</option></select>`),
-      settingRow('检查更新', '有活动会话时会提示先结束会话。', `<button class="btn btn-sm" data-action="check-update">检查</button>`),
-      settingRow('更新历史', '1.0.3 · 修复弱网重连；1.0.2 · 2K 预检。', `<button class="btn btn-sm" data-action="update-history">查看</button>`),
+      settingRow('检查更新', '内测版不提供自动更新；请从发布页下载新安装包覆盖安装。', `<button class="btn btn-sm" data-action="open-help">发布页</button>`),
+      settingRow('更新历史', '3.0.0 · 远程工位首个内测版。', `<button class="btn btn-sm" data-action="open-help">查看</button>`),
     ]);
   }
   if (section === 'diagnostics') {
     return settingsGroup('诊断与支持', '本机自检、诊断包、日志；不默认上传。', [
       settingRow('网络与连接', '检查 Wi-Fi、AP 隔离、P2P、编码器、2K 就绪。', `<button class="btn btn-sm btn-soft" data-action="go-diagnostics">运行自检</button>`),
       settingRow('诊断包', '包含版本、网络、最近错误；不含密码/屏幕/剪贴板。', `<button class="btn btn-sm" data-action="export-diag">导出</button>`),
-      settingRow('日志', '最近 7 天；敏感字段脱敏。', `<button class="btn btn-sm">打开日志</button>`),
-      settingRow('帮助', '无人值守、AP 隔离、版本更新、快捷键。', `<button class="btn btn-sm">打开帮助</button>`),
+      settingRow('本机数据目录', '配置、设备历史与授权缓存。', `<button class="btn btn-sm" data-action="open-data-dir">打开</button>`),
+      settingRow('帮助', '查看发布说明与已知限制。', `<button class="btn btn-sm" data-action="open-help">打开帮助</button>`),
     ]);
   }
   if (section === 'about') {
-    return settingsGroup('关于', '近传 · 远程工位（设计原型）', [
-      settingRow('版本', '1.0.3 · Windows 10/11 x64', `<span class="muted mono" style="font-size:10px">1.0.3</span>`),
+    const appVersion = state.remote?.device?.version || '3.0.0';
+    return settingsGroup('关于', '近传 · 远程工位', [
+      settingRow('版本', `${appVersion} · Windows 10/11 x64`, `<span class="muted mono" style="font-size:10px">${esc(appVersion)}</span>`),
       settingRow('隐私', '不登录、不上云、无默认遥测；诊断包由你决定发给谁。', `<span class="tag ok">本地优先</span>`),
       settingRow('许可', '公司内部自用；不做商业授权系统。', `<span class="muted" style="font-size:10px">Internal</span>`),
       settingRow('产品边界', '不做 4K/120fps、WoL、Hub、AD、手机控制端。', `<span class="muted" style="font-size:10px">V1</span>`),
@@ -1349,7 +1368,7 @@ function showDeviceMenu(anchor, device) {
     { text: '授权管理', icon: 'shield', action: () => { const g = GRANTS.find((x) => x.deviceId === device.id && x.scope === 'managed'); if (g) openGrantDrawer(g.id); else { setView('grants'); toast('这台设备没有可管理的授权；以工位电脑为准', 'warn'); } } },
     { text: '查看审计', icon: 'list', action: () => setView('audit') },
     { text: '网络自检', icon: 'activity', action: () => setView('diagnostics') },
-    { text: '导出诊断', icon: 'download', action: () => toast('诊断包已生成（原型）', 'success') },
+    { text: '导出诊断', icon: 'download', action: () => window.workspace.remote.exportDiag().then((p) => toast(p ? `诊断包已导出：${p}` : '已取消', p ? 'success' : 'info')) },
     { sep: true },
     { text: '移除设备', icon: 'trash', danger: true, action: () => confirmRemoveDevice(device) },
   ]);
@@ -1473,7 +1492,7 @@ function openBackupModal() {
 /* ---------- wizard ---------- */
 function openAddDevice() {
   closeMenu();
-  const peers = (state.peers || []).filter((p) => !p.self);
+  const peers = (state.peers || []).filter((p) => !p.self && p.online);
   openModal(`${modalHead('添加设备', '同一 Wi-Fi 下发现')}
     <div class="modal-body">
       <p style="margin:0 0 10px;font-size:11.5px;color:var(--ink-3)">在工位电脑上打开近传，确保「本机被控」已开启。首次连接需要它显示的 6 位授权码。</p>
@@ -1746,6 +1765,8 @@ function renderCommandList(q) {
     { label: '打开本机被控', icon: 'laptop', action: 'agent' },
     { label: '打开团队群聊', icon: 'chat', action: 'team-chat' },
     { label: '运行网络自检', icon: 'activity', action: 'diagnostics' },
+    { label: '导出诊断包', icon: 'download', action: 'export-diag' },
+    { label: '打开发布说明', icon: 'external', action: 'open-help' },
     { label: '查看审计', icon: 'list', action: 'audit' },
     { label: '打开设置', icon: 'settings', action: 'settings' },
     { label: '切换主题', icon: 'moon', action: 'theme' },
@@ -1761,6 +1782,8 @@ function handleCommandAction(action) {
   else if (action === 'agent') { closeCommand(); toggleAgent(true); }
   else if (action === 'team-chat') { closeCommand(); window.workspace.openChat(); }
   else if (action === 'diagnostics') { closeCommand(); setView('diagnostics'); }
+  else if (action === 'export-diag') { closeCommand(); window.workspace.remote.exportDiag().then((p) => toast(p ? `诊断包已导出：${p}` : '已取消', p ? 'success' : 'info')); }
+  else if (action === 'open-help') { closeCommand(); window.workspace.openHelp(); }
   else if (action === 'audit') { closeCommand(); setView('audit'); }
   else if (action === 'settings') { closeCommand(); setView('settings'); }
   else if (action === 'theme') { closeCommand(); toggleTheme(); }
@@ -1905,6 +1928,10 @@ function closeSession(reason = '用户结束') {
     const end = new Date();
     const fmt = (d) => d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     SESSION_HISTORY.unshift({ id: `s-${Date.now()}`, date: `今天 ${fmt(start)}–${fmt(end)}`, deviceId: state.session.deviceId, duration: formatDuration(state.session.duration), quality: state.session.qualityLabel.replace('自动 · ', '').replace('手动 · ', ''), latency: state.session.real ? 'LAN' : '18ms', result: reason === '会话已被接管' ? '已接管' : '成功', reason });
+    try {
+      const persist = SESSION_HISTORY.filter((x) => deviceById(x.deviceId) && !deviceById(x.deviceId).demo).slice(0, 200);
+      localStorage.setItem('ns-session-history', JSON.stringify(persist));
+    } catch {}
   }
   const name = device?.name || '设备';
   if (state.session.real) {
@@ -1944,7 +1971,7 @@ function renderSession() {
         </div>
         <div class="session-hud">
           ${s.real
-            ? `<span class="hud-item"><span class="hud-dot"></span>LAN</span><span class="hud-item">JPEG</span><span class="hud-item">${esc(s.qualityLabel)}</span>`
+            ? `<span class="hud-item"><span class="hud-dot"></span>LAN</span><span class="hud-item">JPEG · 8fps</span><span class="hud-item">${esc(s.qualityLabel)}</span>`
             : `<span class="hud-item ${s.banner?.type === 'warn' ? 'warn' : ''}"><span class="hud-dot" style="${s.banner?.type === 'warn' ? 'background:#fbbf24' : ''}"></span>18 ms</span><span class="hud-item">60 fps</span><span class="hud-item">7.2 Mbps</span><span class="hud-item">${esc(s.qualityLabel)}</span>`}
         </div>
         <span class="spacer"></span>
@@ -2098,12 +2125,13 @@ async function sessionAction(action) {
   }
   if (s.real && action === 'display-menu') {
     const anchor = document.querySelector('[data-session-action="display-menu"]');
-    showMenu(anchor, [1, 2].map((n) => ({
-      text: `屏幕 ${n}${n === 1 ? '（主屏）' : ''}`, icon: s.display === n ? 'check' : 'display',
+    const displays = Array.isArray(device.displays) && device.displays.length ? device.displays : [{ id: 1, primary: true }];
+    showMenu(anchor, displays.map((d) => ({
+      text: `${d.label || `屏幕 ${d.id}`}${d.primary ? '（主屏）' : ''}`, icon: s.display === d.id ? 'check' : 'display',
       action: () => {
-        window.workspace.remote.setDisplay(n - 1);
-        s.display = n;
-        toast(`已切换到屏幕 ${n}`, 'success');
+        window.workspace.remote.setDisplay(d.id - 1);
+        s.display = d.id;
+        toast(`已切换到${d.label || `屏幕 ${d.id}`}`, 'success');
         renderSession();
       },
     })));
@@ -2680,7 +2708,24 @@ function confirmRemoveDevice(device) {
       <div class="field" style="margin-top:12px"><label for="removeName">输入设备名确认 <em>*</em></label><input class="input" id="removeName" placeholder="${esc(device.name)}"></div>`,
     actions: [
       { label: '取消', onClick: closeModal },
-      { label: '移除', danger: true, primary: true, onClick: () => { closeModal(); toast('已移除（原型）', 'success'); } },
+      { label: '移除', danger: true, primary: true, onClick: async () => {
+        closeModal();
+        if (device.real && device.peerId) {
+          const ok = await window.workspace.remote.forgetPeer(device.peerId);
+          if (ok) {
+            const rs = await window.workspace.remote.state();
+            mergeRemoteState(rs);
+            if (state.selectedDeviceId === device.id) state.selectedDeviceId = DEVICES[0]?.id || null;
+            render();
+            toast('已从本机设备列表移除', 'success');
+          } else toast('无法移除本机设备或设备不存在', 'warn');
+          return;
+        }
+        DEVICES = DEVICES.filter((d) => d.id !== device.id);
+        if (state.selectedDeviceId === device.id) state.selectedDeviceId = DEVICES[0]?.id || null;
+        render();
+        toast('已移除示例设备', 'success');
+      } },
     ],
   });
 }
@@ -2691,7 +2736,9 @@ function handleMainClick(e) {
     const device = deviceById(act.dataset.deviceId || state.selectedDeviceId);
     if (a === 'add-device') openAddDevice();
     else if (a === 'refresh') toast('状态已刷新 · 10:32', 'success');
-    else if (a === 'refresh-grants') toast('授权已同步 · 10:32', 'success');
+    else if (a === 'refresh-grants') {
+      window.workspace.remote.state().then((rs) => { state.remote = rs; mergeRemoteState(rs); renderGrants(); toast('授权已刷新', 'success'); }).catch(() => toast('刷新失败', 'danger'));
+    }
     else if (a === 'filter') { state.filter = act.dataset.value; renderDevices(); }
     else if (a === 'filter-more') showMenu(act, [{ label: '更多筛选' }, { text: '只看离线', icon: 'clock', action: () => { state.filter = 'attention'; renderDevices(); } }, { text: '只看我管理的', icon: 'shield', action: () => { state.filter = 'managed'; renderDevices(); } }, { text: '清除筛选', icon: 'x', action: () => { state.filter = 'all'; state.search = ''; renderDevices(); } }]);
     else if (a === 'clear-search') { state.search = ''; state.filter = 'all'; renderDevices(); }
@@ -2714,6 +2761,28 @@ function handleMainClick(e) {
     else if (a === 'export-diag') window.workspace.remote.exportDiag().then((p) => toast(p ? `诊断包已导出：${p}` : '已取消', p ? 'success' : 'info'));
     else if (a === 'remove-device') confirmRemoveDevice(device);
     else if (a === 'grant-tab') { state.grantTab = act.dataset.value; renderGrants(); }
+    else if (a === 'revoke-inbound') {
+      const cid = act.dataset.controllerId;
+      const g = (state.remote?.grants || []).find((x) => x.controllerId === cid);
+      openInfoModal({
+        title: '撤销控制端授权',
+        sub: g?.name || cid,
+        body: `<div class="perm-summary" style="background:var(--red-soft);border-color:var(--red-line);color:var(--red)">撤销后，该控制端将立即断开，且需要重新输入 6 位码才能连接。正在录制的会话也会停止。</div>`,
+        actions: [
+          { label: '取消', onClick: closeModal },
+          { label: '确认撤销', danger: true, primary: true, onClick: async () => {
+            closeModal();
+            const ok = await window.workspace.remote.revokeGrant(cid);
+            const rs = await window.workspace.remote.state();
+            state.remote = rs;
+            mergeRemoteState(rs);
+            renderGrants();
+            toast(ok ? '已撤销该控制端' : '撤销失败', ok ? 'success' : 'warn');
+          } },
+        ],
+      });
+    }
+    else if (a === 'end-outbound') { closeSession('用户结束'); setView('grants'); }
     else if (a === 'grant-filter') toast(`筛选：${act.textContent.trim()}（原型）`, 'success');
     else if (a === 'audit-filter') { state.auditFilter = act.dataset.value; renderAudit(); }
     else if (a === 'verify-audit') { mergeRemoteAudit(); toast('本机审计已刷新', 'success'); }
@@ -2721,7 +2790,14 @@ function handleMainClick(e) {
     else if (a === 'run-diag') runDiagnostics();
     else if (a === 'copy-diag') copyText(`NEAR-SEND DIAG\n${JSON.stringify(state.diag || {}, null, 2)}`, '诊断结果已复制，可发给 IT');
     else if (a === 'open-backup') openBackupModal();
-    else if (a === 'check-update') toast('已是最新版本 1.0.3', 'success');
+    else if (a === 'check-update') toast('内测版不提供自动更新，请从发布页下载新安装包', 'info');
+    else if (a === 'open-help') window.workspace.openHelp();
+    else if (a === 'open-data-dir') window.workspace.openDataDir();
+    else if (a === 'remote-unlock-help') openInfoModal({
+      title: '锁屏与 UAC 安全桌面',
+      body: `<div class="perm-summary" style="background:var(--amber-soft);border-color:var(--amber-line)">内测版只覆盖已登录的 Windows 桌面，不能在锁屏或 UAC 界面注入输入。</div><div class="card-note">真实安全桌面解锁需要安装 Windows 服务，并使用 Windows 账户密码；PIN、指纹、面容不能远程使用。这不在当前内测范围内。</div>`,
+      actions: [{ label: '知道了', primary: true, onClick: closeModal }],
+    });
     else if (a === 'update-history') toast('更新历史：1.0.3 / 1.0.2 / 1.0.1', 'success');
     else if (a === 'settings-section') { state.settingsSection = act.dataset.value; renderSettings(); }
     else if (a === 'set-theme') { state.theme = act.dataset.value; localStorage.setItem('rd-theme', state.theme); render(); window.workspace.theme(document.documentElement.dataset.theme); }
