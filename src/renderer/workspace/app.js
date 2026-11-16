@@ -1855,19 +1855,21 @@ function openSession(deviceId) {
 }
 async function openRealSession(device) {
   let code = '';
+  let remembered = false;
   try {
     if (device.self) {
       const rs = await window.workspace.remote.state();
       state.remote = rs;
       code = rs?.code || '';
     } else {
-      code = await promptPairCode(device);
+      remembered = localStorage.getItem(`ns-known:${device.peerId}`) === '1';
+      if (!remembered) code = await promptPairCode(device);
     }
   } catch (err) {
     toast(err.message || '无法读取设备信息', 'danger');
     return;
   }
-  if (!code) return;
+  if (!code && !remembered) return;
   closeMenu(); closeCommand(); closeModal(); closeDrawer();
   state.agent = false; renderAgent();
   state.lastFrame = null;
@@ -1908,17 +1910,20 @@ async function openRealSession(device) {
   toast('正在建立加密直连…', 'info');
   const role = state.pendingRole || 'owner';
   state.pendingRole = null;
-  try {
-    await window.workspace.remote.connect(device.peerId, code, role);
-    if (state.session) {
-      state.session.connected = true;
-      const rs = await window.workspace.remote.state();
-      state.session.grant = rs?.session?.grant || null;
-      applySessionGrant();
-      toast(state.session.grant?.role === 'admin' ? '已连接 · 管理员临时支持' : '已连接', 'success');
-      renderSession();
+  const complete = async () => {
+    if (!state.session) return;
+    state.session.connected = true;
+    const rs = await window.workspace.remote.state();
+    state.session.grant = rs?.session?.grant || null;
+    applySessionGrant();
+    if (!device.self) {
+      try { localStorage.setItem(`ns-known:${device.peerId}`, '1'); } catch {}
     }
-  } catch (err) {
+    toast(state.session.grant?.role === 'admin' ? '已连接 · 管理员临时支持' : '已连接', 'success');
+    renderSession();
+  };
+  const failConnect = (err) => {
+    if (!state.session) return;
     state.session = null;
     clearInterval(state.sessionTimer);
     state.sessionTimer = null;
@@ -1927,9 +1932,29 @@ async function openRealSession(device) {
     openInfoModal({
       title: '连接失败',
       sub: device.name,
-      body: `<div class="perm-summary" style="background:var(--red-soft);border-color:var(--red-line);color:var(--red)">${esc(err.message || '无法连接这台电脑')}</div><div class="card-note">请确认两台电脑在同一 Wi-Fi、被控端已开启，并输入正确的 6 位授权码。</div>`,
+      body: `<div class="perm-summary" style="background:var(--red-soft);border-color:var(--red-line);color:var(--red)">${esc(err?.message || '无法连接这台电脑')}</div><div class="card-note">请确认两台电脑在同一 Wi-Fi、被控端已开启，并输入正确的 6 位授权码。</div>`,
       actions: [{ label: '知道了', primary: true, onClick: closeModal }],
     });
+  };
+  const needsCode = (err) => /授权码|PAIR_DENIED|pair denied/i.test(String(err?.message || ''));
+  try {
+    await window.workspace.remote.connect(device.peerId, code, role);
+    await complete();
+  } catch (err) {
+    if (!device.self && !code && needsCode(err)) {
+      const newCode = await promptPairCode(device);
+      if (newCode) {
+        try {
+          await window.workspace.remote.connect(device.peerId, newCode, role);
+          await complete();
+          return;
+        } catch (err2) {
+          failConnect(err2);
+          return;
+        }
+      }
+    }
+    failConnect(err);
   }
 }
 
@@ -2409,6 +2434,7 @@ async function agentAction(action, el) {
     state.remote = rs; renderAgent(); toast(next ? '本机被控已开启' : '本机被控已暂停', next ? 'success' : 'warn'); return;
   }
   if (action === 'send-file') {
+    if (state.remote?.active?.permissions?.file === false) { toast('当前授权未开启文件传输', 'warn'); return; }
     const meta = await window.workspace.remote.sendFileToController();
     toast(meta ? `正在发送 ${meta.name} 给控制端` : '没有活动会话或已取消', meta ? 'success' : 'warn');
     return;
