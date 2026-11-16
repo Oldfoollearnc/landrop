@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, clipboard, nativeImage, dialog, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, clipboard, nativeImage, dialog, shell, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -35,6 +35,7 @@ const BG_LIGHT = '#ffffff';
 let win = null;
 let workspaceWin = null;
 let remote = null;
+let remoteActiveKey = null;
 let chatHidden = true;
 let workspaceTheme = 'light';
 let tray = null;
@@ -1134,7 +1135,31 @@ async function boot() {
 
   remote = new RemoteManager({ userDataDir: app.getPath('userData'), version: app.getVersion() });
   remote.on('peers', (peers) => sendWorkspace('workspace:event', { t: 'peers', peers }));
-  remote.on('state', (state) => sendWorkspace('workspace:event', { t: 'remote-state', state }));
+  remote.on('state', (state) => {
+    const active = state.active;
+    const key = active ? `${active.controller || active.peerName}|${active.startedAt}` : null;
+    if (key !== remoteActiveKey) {
+      remoteActiveKey = key;
+      try {
+        if (active) {
+          if (Notification.isSupported()) {
+            new Notification({
+              title: '近传 · 远程会话',
+              body: `${active.controller || active.peerName || '控制端'} 正在控制这台电脑`,
+              silent: false,
+            }).show();
+          }
+          if (tray) tray.setToolTip('近传 · 正在被控制');
+        } else {
+          if (Notification.isSupported()) {
+            new Notification({ title: '近传 · 远程会话已结束', body: '这台电脑当前没有被远程控制' }).show();
+          }
+          if (tray) tray.setToolTip(trayTooltip());
+        }
+      } catch {}
+    }
+    sendWorkspace('workspace:event', { t: 'remote-state', state });
+  });
   remote.on('session', (session) => sendWorkspace('workspace:event', { t: 'session', session }));
   remote.on('frame', (frame) => sendWorkspace('workspace:event', { t: 'frame', frame }));
   remote.on('chat', (chat) => sendWorkspace('workspace:event', { t: 'chat', chat }));
