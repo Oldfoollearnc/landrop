@@ -14,6 +14,7 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const readline = require('readline');
 const { spawn } = require('child_process');
 
 const APP_TAG = 'nearsend-remote';
@@ -70,6 +71,10 @@ class RemoteManager extends EventEmitter {
     this.captureBusy = false;
     this.helper = null;
     this.helperPath = this.resolveHelper();
+    this.captureHelper = null;
+    this.captureReader = null;
+    this.capturePath = this.resolveCaptureHelper();
+    this.captureMode = null;
     this.auditFile = path.join(userDataDir, 'remote-audit.json');
     this.audit = this.loadAudit();
     this.auditTimer = null;
@@ -121,6 +126,12 @@ class RemoteManager extends EventEmitter {
     }
     return path.join(app.getAppPath(), 'assets', 'remote-input.exe');
   }
+  resolveCaptureHelper() {
+    if (app.isPackaged) {
+      return path.join(process.resourcesPath, 'app.asar.unpacked', 'assets', 'remote-capture.exe');
+    }
+    return path.join(app.getAppPath(), 'assets', 'remote-capture.exe');
+  }
   async init() {
     await this.startWs();
     this.startUdp();
@@ -165,6 +176,7 @@ class RemoteManager extends EventEmitter {
               id: msg.id, name: safeName(msg.name, msg.id), ip: rinfo.address, port: Number(msg.port) || 0,
               os: msg.os || 'Windows', version: msg.version || '', online: true, lastSeen: now(), self: false,
               displayCount: Math.max(1, Math.min(2, Number(msg.displayCount) || 1)),
+              displays: Array.isArray(msg.displays) ? msg.displays.slice(0, 2) : undefined,
             };
             if (!peer.port) return;
             this.peers.set(peer.id, peer);
@@ -252,6 +264,7 @@ class RemoteManager extends EventEmitter {
       id: peer.id, name: peer.name, ip: peer.ip, port: peer.port,
       os: peer.os, version: peer.version, lastSeen: peer.lastSeen,
       displayCount: peer.displayCount || 1,
+      displays: peer.displays || undefined,
     };
     this.saveKnownSoon();
   }
@@ -263,6 +276,7 @@ class RemoteManager extends EventEmitter {
       id: this.deviceId, name: `${this.deviceName}（本机）`, ip: '127.0.0.1', port: this.wsPort,
       os: `Windows · ${os.release()}`, version: this.version, online: true, lastSeen: now(), self: true,
       displayCount: screen.getAllDisplays().length,
+      displays: screen.getAllDisplays().map((d, i) => ({ index: i, res: `${d.size.width}×${d.size.height}`, primary: d.id === screen.getPrimaryDisplay().id })),
     });
   }
 
@@ -270,7 +284,9 @@ class RemoteManager extends EventEmitter {
     if (!this.udp || !this.agentEnabled) return;
     const msg = Buffer.from(JSON.stringify({
       ns: APP_TAG, t: 'announce', id: this.deviceId, name: this.deviceName, port: this.wsPort,
-      os: `Windows · ${os.release()}`, version: this.version, displayCount: screen.getAllDisplays().length, ts: now(),
+      os: `Windows · ${os.release()}`, version: this.version, displayCount: screen.getAllDisplays().length,
+      displays: screen.getAllDisplays().map((d, i) => ({ index: i, res: `${d.size.width}×${d.size.height}`, primary: d.id === screen.getPrimaryDisplay().id })),
+      ts: now(),
     }));
     try {
       if (to) this.udp.send(msg, UDP_PORT, to);
@@ -288,6 +304,7 @@ class RemoteManager extends EventEmitter {
     return [...this.peers.values()].map((p) => ({
       id: p.id, name: p.name, ip: p.ip, port: p.port, os: p.os, version: p.version,
       online: p.online, self: !!p.self, lastSeen: p.lastSeen, displayCount: p.displayCount || 1,
+      displays: p.displays || undefined,
     }));
   }
 
@@ -300,6 +317,7 @@ class RemoteManager extends EventEmitter {
         quality: this.active.quality,
         display: this.active.display,
         recording: !!this.active.recording,
+        capture: this.captureMode || 'electron',
         role: this.active.role,
         permissions: this.active.permissions,
         expiresAt: this.active.expiresAt,
@@ -528,12 +546,10 @@ class RemoteManager extends EventEmitter {
       }, Math.max(0, conn.grant.expiresAt - now()));
     }
     this.emit('state', this.state());
-    this.startFrames();
+    this.startCapture();
   }
 
-  startFrames() {
-    clearInterval(this.frameTimer);
-    this.frameTimer = setInterval(() => this.captureOnce(), FRAME_MS);
+  startClipboardSync() {
     clearInterval(this.clipboardTimer);
     this.clipboardTimer = setInterval(() => {
       const active = this.active;
@@ -545,6 +561,82 @@ class RemoteManager extends EventEmitter {
         this.send(active.ws, { t: 'clipboard', text: text.slice(0, 200000) });
       }
     }, 1200);
+  }
+
+  startCapture() {
+    const active = this.active;
+    if (!active) return;
+    this.stopCaptureHelper();
+    const profile = active.quality === '2k'
+      ? { width: 2560, height: 1440, quality: 68, fps: 12 }
+      : active.quality === '720'
+        ? { width: 1280, height: 720, quality: 60, fps: 20 }
+        : { width: 1920, height: 1080, quality: 64, fps: 15 };
+    this.startClipboardSync();
+    if (fs.existsSync(this.capturePath)) {
+      try {
+        const child = spawn(this.capturePath, [
+          String(active.display), String(profile.width), String(profile.height), String(profile.quality), String(profile.fps),
+        ], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+        this.captureHelper = child;
+        this.captureMode = 'gdi';
+        const reader = readline.createInterface({ input: child.stdout });
+        this.captureReader = reader;
+        let gotFrame = false;
+        reader.on('line', (line) => {
+          if (this.active !== active) return;
+          if (!active.ws || active.ws.readyState !== WebSocket.OPEN) return;
+          if (active.ws.bufferedAmount > 8 * 1024 * 1024) return;
+          const i1 = line.indexOf(' ');
+          const i2 = line.indexOf(' ', i1 + 1);
+          if (i1 < 0 || i2 < 0) return;
+          const width = Number(line.slice(0, i1));
+          const height = Number(line.slice(i1 + 1, i2));
+          const data = line.slice(i2 + 1);
+          if (!width || !height || !data) return;
+          gotFrame = true;
+          this.send(active.ws, { t: 'frame', ts: now(), display: active.display, width, height, data, capture: 'gdi' });
+        });
+        child.on('error', () => {
+          if (this.captureHelper === child) this.captureHelper = null;
+          if (this.active === active && !gotFrame) {
+            this.captureMode = 'electron';
+            this.startFrames();
+          }
+        });
+        child.on('exit', () => {
+          if (this.captureHelper === child) this.captureHelper = null;
+          if (this.active === active) {
+            this.captureMode = 'electron';
+            this.startFrames();
+          }
+        });
+        this.emit('state', this.state());
+        return;
+      } catch {
+        /* fall through to Electron capture */
+      }
+    }
+    this.captureMode = 'electron';
+    this.startFrames();
+  }
+
+  stopCaptureHelper() {
+    if (this.captureReader) {
+      try { this.captureReader.close(); } catch {}
+      this.captureReader = null;
+    }
+    if (this.captureHelper) {
+      try { this.captureHelper.kill(); } catch {}
+      this.captureHelper = null;
+    }
+  }
+
+  startFrames() {
+    this.stopCaptureHelper();
+    clearInterval(this.frameTimer);
+    this.frameTimer = setInterval(() => this.captureOnce(), FRAME_MS);
+    if (!this.clipboardTimer) this.startClipboardSync();
     this.captureOnce();
   }
 
@@ -566,13 +658,16 @@ class RemoteManager extends EventEmitter {
       const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size });
       if (!sources.length) throw new Error('no screen source');
       if (this.active !== active) return;
-      const src = sources[Math.min(active.display, sources.length - 1)];
+      const targetDisplay = displayBounds(active.display);
+      const src = sources.find((s) => String(s.display_id) === String(targetDisplay.id))
+        || sources[Math.min(active.display, sources.length - 1)];
       const img = src.thumbnail;
       const sz = img.getSize();
       const jpeg = img.toJPEG(active.quality === '2k' ? 72 : 66);
       const frame = {
         t: 'frame', ts: now(), display: active.display,
         width: sz.width, height: sz.height, data: jpeg.toString('base64'),
+        capture: this.captureMode || 'electron',
       };
       this.send(active.ws, frame);
     } catch (err) {
@@ -584,6 +679,8 @@ class RemoteManager extends EventEmitter {
     clearInterval(this.frameTimer);
     clearInterval(this.clipboardTimer);
     clearTimeout(this.grantTimer);
+    this.stopCaptureHelper();
+    this.captureMode = null;
     this.frameTimer = null;
     this.clipboardTimer = null;
     this.grantTimer = null;
@@ -911,6 +1008,7 @@ class RemoteManager extends EventEmitter {
     clearInterval(this.frameTimer);
     clearInterval(this.clipboardTimer);
     clearTimeout(this.grantTimer);
+    this.stopCaptureHelper();
     clearTimeout(this.knownSaveTimer);
     clearTimeout(this.auditTimer);
     this.knownSaveTimer = null;
