@@ -225,6 +225,7 @@ const state = {
   dmPeerId: null,
   dmConversations: {},
   pairResolve: null,
+  addRole: 'owner',
   windowMaximized: false,
   incomingUnread: 0,
   uiSettings: (() => { try { return JSON.parse(localStorage.getItem('ns-ui-settings') || '{}'); } catch { return {}; } })(),
@@ -250,7 +251,7 @@ function peerToDevice(peer) {
     grantType: 'owner',
     expiryLabel: '长期',
     expirySeconds: null,
-    permissions: { view: true, control: true, unattended: false, clipboard: true, file: true, manage: false, audit: true, record: false },
+    permissions: { view: true, control: true, unattended: false, clipboard: true, file: true, manage: false, audit: true, record: true },
     displays: Array.from({ length: Math.max(1, Math.min(2, peer.displayCount || 1)) }, (_, i) => ({
       id: i + 1, label: `屏幕 ${i + 1}`, res: '1920×1080', dpi: '100%', primary: i === 0,
     })),
@@ -270,6 +271,21 @@ function peerToDevice(peer) {
   };
 }
 
+function applySessionGrant() {
+  const grant = state.session?.grant;
+  if (!grant || !grant.permissions) return;
+  const d = DEVICES.find((x) => x.id === state.session.deviceId);
+  if (!d) return;
+  d.permissions = { ...d.permissions, ...grant.permissions };
+  d.relation = grant.role === 'admin' ? 'managed' : d.relation;
+  d.grantType = grant.role === 'admin' ? 'admin' : 'owner';
+  d.expiryLabel = grant.expiresAt
+    ? `${Math.max(1, Math.ceil((grant.expiresAt - Date.now()) / 3600000))} 小时`
+    : '长期';
+  d.expirySeconds = grant.expiresAt ? Math.max(0, Math.floor((grant.expiresAt - Date.now()) / 1000)) : null;
+  state.session.clipboard = !!d.permissions.clipboard;
+}
+
 function mergeRemoteState(remoteState) {
   if (!remoteState) return;
   const firstRemote = !state.remote;
@@ -280,6 +296,7 @@ function mergeRemoteState(remoteState) {
   const demos = DEMO_ENABLED ? DEVICES.filter((d) => d.demo) : [];
   const all = [...real, ...demos];
   DEVICES = all;
+  applySessionGrant();
   if (!DEVICES.some((d) => d.id === state.selectedDeviceId)) {
     state.selectedDeviceId = DEVICES[0] ? DEVICES[0].id : null;
   } else if (firstRemote && real.length && deviceById(state.selectedDeviceId)?.demo) {
@@ -818,6 +835,7 @@ function handleWorkspaceEvent(payload) {
   }
   if (payload.t === 'file-progress') {
     const evt = payload.file || {};
+    if (evt.done) toast(evt.direction === 'in' ? `收到文件 ${evt.name}` : `文件已发送 ${evt.name}`, evt.error ? 'danger' : 'success');
     if (!state.session) return;
     let f = state.session.files.find((x) => x.id === evt.id);
     if (!f) { f = { id: evt.id, name: evt.name, size: evt.size, received: 0, progress: 0 }; state.session.files.push(f); }
@@ -1460,6 +1478,11 @@ function openAddDevice() {
     <div class="modal-body">
       <p style="margin:0 0 10px;font-size:11.5px;color:var(--ink-3)">在工位电脑上打开近传，确保「本机被控」已开启。首次连接需要它显示的 6 位授权码。</p>
       ${peers.length ? `<div class="perm-table" style="margin-top:0">${peers.map((p) => `<div class="perm-row"><div class="perm-main"><b>${esc(p.name)} <span class="tag ok">在线</span></b><span>${esc(p.ip)} · ${esc(p.os || 'Windows')} · v${esc(p.version || '—')}</span></div><button class="btn btn-sm btn-primary" data-modal-action="connect-peer" data-peer-id="${p.id}">连接</button></div>`).join('')}</div>` : `<div class="empty-state" style="padding:24px 10px"><div class="empty-ico">${icon('wifi', 20)}</div><b>没有发现其他设备</b><p>请确认两台电脑在同一 Wi-Fi、未开启 AP 隔离，并且对方已开启「本机被控」。也可以先用本机预览验证画质与输入。</p></div>`}
+      <div class="role-row" style="margin-top:12px"><span>连接身份：</span><div class="seg">
+        <button class="${state.addRole === 'owner' ? 'active' : ''}" data-modal-action="add-role" data-value="owner">我的设备</button>
+        <button class="${state.addRole === 'admin' ? 'active' : ''}" data-modal-action="add-role" data-value="admin">管理员临时支持</button>
+      </div></div>
+      <div class="card-note">${state.addRole === 'admin' ? '管理员临时支持：8 小时后自动到期；无人值守、剪贴板、文件、录制默认关闭。员工可在工位端撤销。' : '我的设备：长期授权；剪贴板、文件、录制可用。'}</div>
       <div class="card-note">找不到？检查两台电脑是否在同一网段；Windows 防火墙是否放通近传；AP 是否开启客户端隔离。</div>
     </div>
     ${modalFoot(`<button class="btn" data-modal-close>取消</button><button class="btn" data-modal-action="self-preview">${icon('monitor', 13)} 本机预览</button><button class="btn btn-primary" data-modal-action="refresh-peers">${icon('refresh', 13)} 重新扫描</button>`)}`, { size: 'md', label: '添加设备' });
@@ -1828,9 +1851,18 @@ async function openRealSession(device) {
   }, 1000);
   renderSession();
   toast('正在建立加密直连…', 'info');
+  const role = state.pendingRole || 'owner';
+  state.pendingRole = null;
   try {
-    await window.workspace.remote.connect(device.peerId, code);
-    if (state.session) { state.session.connected = true; toast('已连接', 'success'); }
+    await window.workspace.remote.connect(device.peerId, code, role);
+    if (state.session) {
+      state.session.connected = true;
+      const rs = await window.workspace.remote.state();
+      state.session.grant = rs?.session?.grant || null;
+      applySessionGrant();
+      toast(state.session.grant?.role === 'admin' ? '已连接 · 管理员临时支持' : '已连接', 'success');
+      renderSession();
+    }
   } catch (err) {
     state.session = null;
     clearInterval(state.sessionTimer);
@@ -1863,6 +1895,11 @@ function closeSession(reason = '用户结束') {
   const device = deviceById(state.session.deviceId);
   clearInterval(state.sessionTimer);
   state.sessionTimer = null;
+  if (state.session.recording) {
+    try { state.session.recorder?.stop(); } catch {}
+    state.session.recording = false;
+    window.workspace.remote.setRecording?.(false);
+  }
   if (reason === '用户结束' || reason === '会话已被接管' || reason === '授权到期' || reason === '远程结束') {
     const start = new Date(state.session.startAt || Date.now());
     const end = new Date();
@@ -1892,6 +1929,8 @@ function renderSession() {
   if (!device) { closeSession(); return; }
   const locked = !s.real && s.locked && !s.unlocked;
   const admin = device.relation === 'managed' && !s.real;
+  const grantMinutes = s.grant?.expiresAt ? Math.max(0, Math.ceil((s.grant.expiresAt - Date.now()) / 60000)) : null;
+  const grantLabel = grantMinutes === null ? '' : grantMinutes >= 60 ? `${Math.ceil(grantMinutes / 60)} 小时` : `${grantMinutes} 分钟`;
   root.innerHTML = `
     <div class="session-shell">
       <div class="session-top">
@@ -1899,8 +1938,9 @@ function renderSession() {
           <span class="s-ico">${icon(locked ? 'lock' : 'monitor', 13)}</span>
           <div><b>${esc(device.name)}</b><div class="s-sub">${esc(device.host)} · ${esc(device.owner)}${admin ? ' · 管理员临时支持' : ''}</div></div>
           ${admin ? `<span class="tag admin" style="margin-left:4px">${icon('clock', 10)}${esc(device.expiryLabel)}</span>` : ''}
+          ${s.grant?.role === 'admin' ? `<span class="tag admin" style="margin-left:4px">${icon('clock', 10)}临时支持 · ${esc(grantLabel)}</span>` : ''}
           ${locked ? `<span class="tag blue">无人值守</span>` : ''}
-          ${s.recording ? `<span class="tag red">${icon('record', 10)}录制中</span>` : ''}
+          <span class="tag red" id="recChip" ${s.recording ? '' : 'hidden'}>${icon('record', 10)}录制中</span>
         </div>
         <div class="session-hud">
           ${s.real
@@ -2005,7 +2045,7 @@ function sessionDrawerHtml(device, s) {
   return `<aside class="session-drawer"><div class="session-drawer-head"><b>会话信息</b><button class="icon-btn" data-session-action="drawer-close" aria-label="关闭">${icon('x', 15)}</button></div><div class="session-drawer-body">
     <div class="card"><div class="card-head"><b>连接</b><span class="tag ok">${s.real ? '局域网直连' : 'P2P 直连'}</span></div><dl class="kv"><dt>设备</dt><dd>${esc(device.name)}</dd><dt>主机</dt><dd class="mono">${esc(device.host)}</dd><dt>控制端</dt><dd>${s.real ? '本机' : '李伟的笔记本'}</dd><dt>开始</dt><dd>今天 ${esc(startLabel)}</dd><dt>时长</dt><dd data-session-duration>${formatDuration(s.duration)}</dd></dl></div>
     <div class="card" style="margin-top:10px"><div class="card-head"><b>画质</b><span class="tag blue">${esc(s.qualityLabel)}</span></div><dl class="kv"><dt>请求</dt><dd>${esc(s.qualityLabel)}</dd><dt>实际</dt><dd>${s.real ? 'WS · JPEG 帧' : '1080p60 · 7.2 Mbps'}</dd><dt>显示器</dt><dd>屏幕 ${s.display} · ${esc((device.displays.find((d) => d.id === s.display) || device.displays[0]).res)}</dd><dt>延迟</dt><dd class="mono">${s.real ? '局域网' : '18 ms · 丢包 0.2%'}</dd><dt>编码</dt><dd>${s.real ? 'JPEG' : 'H.264 · 4:2:0'}</dd></dl></div>
-    <div class="card" style="margin-top:10px"><div class="card-head"><b>权限</b></div><div class="permission-summary">${PERMISSIONS.map((p) => `<span class="perm-chip ${device.permissions[p.key] ? '' : 'off'}">${icon(device.permissions[p.key] ? 'check' : 'x', 11)}${p.name}</span>`).join('')}</div><div class="card-note">${device.relation === 'managed' ? '管理员临时支持：8 小时后到期；无人值守/剪贴板/文件默认关闭。' : '本人设备：长期授权；录制默认关闭。'}</div></div>
+    <div class="card" style="margin-top:10px"><div class="card-head"><b>权限</b></div><div class="permission-summary">${PERMISSIONS.map((p) => `<span class="perm-chip ${device.permissions[p.key] ? '' : 'off'}">${icon(device.permissions[p.key] ? 'check' : 'x', 11)}${p.name}</span>`).join('')}</div><div class="card-note">${s.grant?.role === 'admin' ? '管理员临时支持：8 小时后到期；无人值守/剪贴板/文件/录制默认关闭。' : '本人设备：长期授权；录制默认关闭。'}</div></div>
     <div class="card" style="margin-top:10px"><div class="card-head"><b>安全</b></div><dl class="kv"><dt>传输</dt><dd>${s.real ? '局域网 WS · 无云端' : 'TLS 1.3 / DTLS-SRTP'}</dd><dt>审计</dt><dd>本机 + 设备</dd><dt>录制</dt><dd>${s.recording ? '录制中' : '关闭'}</dd></dl><div class="card-note">会话结束会释放按键；不保存 Windows 密码。锁屏/UAC 安全桌面需原生服务。</div></div>
     <button class="btn btn-sm" style="margin-top:10px" data-session-action="copy-diag">${icon('copy', 13)} 复制诊断信息</button>
   </div></aside>`;
@@ -2082,6 +2122,11 @@ async function sessionAction(action) {
     renderSession();
     return;
   }
+  if (s.real && action === 'record') {
+    if (!device.permissions.record) { toast('当前授权未开启录制', 'warn'); return; }
+    if (s.recording) stopRecording(); else startRecording();
+    return;
+  }
   if (s.real && action === 'pick-file') {
     const meta = await window.workspace.remote.pickFile();
     if (meta) {
@@ -2125,6 +2170,7 @@ async function sessionAction(action) {
   if (s.real && action === 'more') {
     const anchor = document.querySelector('[data-session-action="more"]');
     showMenu(anchor, [
+      { text: s.recording ? '停止录制' : '开始录制', icon: 'record', action: () => sessionAction('record') },
       { text: '会话信息', icon: 'info', action: () => { s.drawer = 'info'; renderSession(); } },
       { text: '发送 Ctrl+Alt+Del', icon: 'keyboard', action: () => {
         const seq = [17, 18, 46];
@@ -2232,13 +2278,25 @@ function renderAgent() {
       </div>
       <div class="agent-section">
         <div class="agent-section-head">当前会话</div>
-        ${active ? `<div class="agent-session-title">${icon('user', 14)} ${esc(active.controller || active.peerName || '控制端')}</div><div class="agent-session-meta">正在控制这台电脑 · ${esc(active.quality || 'auto')} · 屏幕 ${(active.display || 0) + 1}</div><div class="agent-actions"><button class="btn btn-sm" data-agent-action="end-session">结束会话</button><button class="btn btn-sm" data-agent-action="open-chat">打开消息</button></div>` : `<div class="agent-session-title">${icon('monitor', 14)} 当前没有远程会话</div><div class="agent-session-meta">${on ? '已授权控制端可在同一 Wi-Fi 下连接。' : '开启被控后，其他设备才能发现这台电脑。'}</div>`}
+        ${active ? `<div class="agent-session-title">${icon('user', 14)} ${esc(active.controller || active.peerName || '控制端')} ${active.role === 'admin' ? '<span class="tag admin">管理员临时</span>' : ''} ${active.recording ? '<span class="tag red">录制中</span>' : ''}</div><div class="agent-session-meta">正在控制这台电脑 · ${esc(active.quality || 'auto')} · 屏幕 ${(active.display || 0) + 1}${active.role === 'admin' ? ' · 8 小时后到期' : ''}${active.recording ? ' · 本机会显示录制提示' : ''}</div><div class="agent-actions"><button class="btn btn-sm" data-agent-action="end-session">结束会话</button><button class="btn btn-sm" data-agent-action="send-file">发送文件给控制端</button><button class="btn btn-sm" data-agent-action="open-chat">打开消息</button></div>` : `<div class="agent-session-title">${icon('monitor', 14)} 当前没有远程会话</div><div class="agent-session-meta">${on ? '已授权控制端可在同一 Wi-Fi 下连接。' : '开启被控后，其他设备才能发现这台电脑。'}</div>`}
       </div>
       <div class="agent-quick">
         <button class="btn" data-agent-action="toggle">${icon(on ? 'pause' : 'play', 13)} ${on ? '暂停被控' : '开启被控'}</button>
         <button class="btn" data-agent-action="refresh-code">${icon('refresh', 13)} 刷新授权码</button>
         <button class="btn" data-agent-action="open-chat">${icon('chat', 13)} 团队群聊</button>
         <button class="btn" data-agent-action="settings">${icon('settings', 13)} 被控设置</button>
+      </div>
+      <div class="agent-section">
+        <div class="agent-section-head">已授权控制端</div>
+        ${(() => {
+          const grants = Array.isArray(rs.grants) ? rs.grants : [];
+          if (!grants.length) return `<div class="card-note">还没有授权控制端。控制端首次输入上方 6 位码后会出现在这里；可随时撤销。</div>`;
+          return `<div class="agent-auth-list">${grants.map((g) => {
+            const remain = g.expiresAt ? Math.max(0, Math.ceil((g.expiresAt - Date.now()) / 60000)) : null;
+            const remainLabel = remain === null ? '长期' : remain >= 60 ? `剩余 ${Math.ceil(remain / 60)} 小时` : `剩余 ${remain} 分钟`;
+            return `<div class="agent-auth-row"><div class="aa-main"><b>${esc(g.name || g.controllerId)}</b><span>${g.role === 'admin' ? `管理员临时支持 · ${remainLabel}` : `我的控制端 · 长期`} · 无人值守关</span></div>${g.role === 'admin' ? '<span class="tag admin">管理员</span>' : '<span class="tag ok">本人</span>'}<button class="icon-btn" data-agent-action="revoke" data-controller-id="${esc(g.controllerId)}" title="撤销">${icon('trash', 13)}</button></div>`;
+          }).join('')}</div>`;
+        })()}
       </div>
       <div class="agent-section">
         <div class="agent-section-head">本机信息</div>
@@ -2274,6 +2332,18 @@ function drawFakeQr(canvas) {
 async function agentAction(action, el) {
   if (action === 'close') { toggleAgent(false); return; }
   if (action === 'copy-code') { copyText(state.remote?.code || '', '授权码已复制'); return; }
+  if (action === 'revoke') {
+    const id = el?.dataset.controllerId;
+    if (!id) return;
+    const ok = await window.workspace.remote.revokeGrant(id);
+    if (ok) {
+      const rs = await window.workspace.remote.state();
+      state.remote = rs;
+      renderAgent();
+      toast('已撤销该控制端授权', 'success');
+    } else toast('撤销失败：控制端不存在', 'warn');
+    return;
+  }
   if (action === 'refresh-code') {
     const code = await window.workspace.remote.refreshCode();
     if (state.remote) state.remote.code = code;
@@ -2283,6 +2353,11 @@ async function agentAction(action, el) {
     const next = !(state.remote?.agentEnabled !== false);
     const rs = await window.workspace.remote.agent(next);
     state.remote = rs; renderAgent(); toast(next ? '本机被控已开启' : '本机被控已暂停', next ? 'success' : 'warn'); return;
+  }
+  if (action === 'send-file') {
+    const meta = await window.workspace.remote.sendFileToController();
+    toast(meta ? `正在发送 ${meta.name} 给控制端` : '没有活动会话或已取消', meta ? 'success' : 'warn');
+    return;
   }
   if (action === 'end-session') {
     const rs = await window.workspace.remote.endActive();
@@ -2302,8 +2377,14 @@ function bindModal() {
     const info = e.target.closest('[data-info-index]');
     if (info) { const a = state.modalInfoActions?.[Number(info.dataset.infoIndex)]; a?.onClick?.(); return; }
     const act = e.target.closest('[data-modal-action]');
+    if (act?.dataset.modalAction === 'add-role') {
+      state.addRole = act.dataset.value === 'admin' ? 'admin' : 'owner';
+      openAddDevice();
+      return;
+    }
     if (act?.dataset.modalAction === 'connect-peer') {
       const peerId = act.dataset.peerId;
+      state.pendingRole = state.addRole;
       closeModal();
       const device = deviceById(`peer-${peerId}`);
       if (device) openSession(device.id); else toast('设备已离线', 'warn');
@@ -2495,9 +2576,78 @@ function drawRemoteFrame(frame) {
     const w = img.width * scale, h = img.height * scale;
     state.frameRect = { x: (cw - w) / 2, y: (ch - h) / 2, w, h };
     ctx.drawImage(img, state.frameRect.x, state.frameRect.y, w, h);
+    const sess = state.session;
+    if (sess?.recording && sess.recCanvas && sess.recCtx) {
+      if (sess.recCanvas.width !== cw || sess.recCanvas.height !== ch) {
+        sess.recCanvas.width = cw;
+        sess.recCanvas.height = ch;
+      }
+      sess.recCtx.drawImage(canvas, 0, 0, cw, ch);
+    }
   };
   img.src = `data:image/jpeg;base64,${frame.data}`;
 }
+async function startRecording() {
+  const s = state.session;
+  if (!s || !s.real) return;
+  const canvas = document.getElementById('remoteCanvas');
+  if (!canvas || !window.MediaRecorder) { toast('当前环境不支持录制', 'warn'); return; }
+  try {
+    const recCanvas = document.createElement('canvas');
+    recCanvas.width = canvas.width || 1360;
+    recCanvas.height = canvas.height || 792;
+    const recCtx = recCanvas.getContext('2d');
+    const stream = recCanvas.captureStream(5);
+    const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+      ? 'video/webm;codecs=vp9'
+      : MediaRecorder.isTypeSupported('video/webm;codecs=vp8') ? 'video/webm;codecs=vp8' : 'video/webm';
+    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_000_000 });
+    s.recordingChunks = [];
+    s.recCanvas = recCanvas;
+    s.recCtx = recCtx;
+    s.recStream = stream;
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) s.recordingChunks.push(e.data); };
+    rec.onstop = async () => {
+      const chunks = s.recordingChunks || [];
+      s.recCanvas = null;
+      s.recCtx = null;
+      if (s.recStream) { try { s.recStream.getTracks().forEach((t) => t.stop()); } catch {} s.recStream = null; }
+      if (!chunks.length) { toast('当前画面没有可保存的录制数据', 'warn'); return; }
+      const blob = new Blob(chunks, { type: mime });
+      const d = deviceById(s.deviceId);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const name = `NearSend-${(d?.name || 'session').replace(/[\\/:*?"<>|]/g, '_')}-${stamp}.webm`;
+      try {
+        const buf = await blob.arrayBuffer();
+        const saved = await window.workspace.saveRecording(name, buf);
+        toast(saved ? `录制已保存：${saved}` : '已取消保存录制', saved ? 'success' : 'info');
+      } catch (err) {
+        toast(`录制保存失败：${err.message}`, 'danger');
+      }
+    };
+    rec.start(1000);
+    s.recorder = rec;
+    s.recording = true;
+    window.workspace.remote.setRecording?.(true);
+    const chip = document.getElementById('recChip');
+    if (chip) chip.hidden = false;
+    toast('开始录制 · 工位端会显示录制提示', 'warn');
+  } catch (err) {
+    toast(`无法开始录制：${err.message}`, 'danger');
+  }
+}
+function stopRecording() {
+  const s = state.session;
+  if (!s) return;
+  try { s.recorder?.stop(); } catch {}
+  s.recorder = null;
+  s.recording = false;
+  window.workspace.remote.setRecording?.(false);
+  const chip = document.getElementById('recChip');
+  if (chip) chip.hidden = true;
+  toast('已停止录制，正在保存…', 'success');
+}
+
 function sendRemoteKey(e, down) {
   const vk = vkOf(e);
   if (!vk) return false;
