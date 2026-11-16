@@ -234,14 +234,15 @@ const state = {
 function deviceById(id) { return DEVICES.find((d) => d.id === id); }
 
 function peerToDevice(peer) {
-  const name = peer.self ? `本机 · ${String(peer.name || '').replace('（本机）', '')}` : peer.name;
+  const rawName = String(peer.name || '').replace('（本机）', '').trim() || peer.id;
+  const name = peer.self ? `${rawName}（本机）` : rawName;
   return {
     id: `peer-${peer.id}`,
     peerId: peer.id,
     real: true,
     self: !!peer.self,
     name,
-    host: peer.name || peer.id,
+    host: rawName,
     owner: peer.self ? '本机' : '同事',
     dept: '局域网',
     asset: 'LAN',
@@ -251,9 +252,13 @@ function peerToDevice(peer) {
     grantType: 'owner',
     expiryLabel: '长期',
     expirySeconds: null,
-    permissions: { view: true, control: true, unattended: false, clipboard: true, file: true, manage: false, audit: true, record: true },
+    permissions: { view: true, control: true, unattended: !!peer.self, clipboard: true, file: true, manage: false, audit: true, record: true },
     displays: Array.from({ length: Math.max(1, Math.min(2, peer.displayCount || 1)) }, (_, i) => ({
-      id: i + 1, label: `屏幕 ${i + 1}`, res: '1920×1080', dpi: '100%', primary: i === 0,
+      id: i + 1,
+      label: `屏幕 ${i + 1}`,
+      res: peer.displays?.[i]?.res || '1920×1080',
+      dpi: '100%',
+      primary: peer.displays?.[i]?.primary ?? i === 0,
     })),
     encoder: 'JPEG · LAN',
     wifi: 'LAN',
@@ -770,11 +775,20 @@ function updateUnreadBadge(n) {
 function mergeAuditEvent(evt) {
   if (!evt || !evt.id) return;
   const device = deviceById(`peer-${evt.fromId || ''}`) || deviceById(state.selectedDeviceId);
+  const labels = {
+    session_start: '会话开始', session_end: '会话结束', pair: '设备配对', pair_failed: '配对失败',
+    chat_in: '私聊接收', chat_out: '私聊发送', file_in: '接收文件', file_out: '发送文件',
+    grant_expired: '临时授权到期', grant_revoke: '撤销授权', recording: '录制状态',
+  };
+  const t = String(evt.type || '');
+  let kind = 'connection';
+  if (t.startsWith('chat')) kind = 'message';
+  else if (t.startsWith('file')) kind = 'file';
+  else if (t.startsWith('grant')) kind = 'grant';
   AUDIT.unshift({
     id: evt.id, time: new Date(evt.ts).toLocaleTimeString('zh-CN', { hour12: false }),
-    event: evt.type === 'session_start' ? '会话开始' : evt.type === 'session_end' ? '会话结束' : evt.type === 'pair' ? '设备配对' : evt.type === 'chat_in' ? '私聊接收' : evt.type === 'chat_out' ? '私聊发送' : evt.type,
-    code: String(evt.type || '').toUpperCase(), actor: evt.actor || '本机', deviceId: device?.id || 'dev-1',
-    result: evt.result || '成功', type: evt.type?.startsWith('chat') ? 'grant' : 'connection', detail: evt.detail || '',
+    event: labels[t] || t, code: t.toUpperCase(), actor: evt.actor || '本机', deviceId: device?.id || 'dev-1',
+    result: evt.result || '成功', type: kind, detail: evt.detail || '',
   });
 }
 
@@ -835,7 +849,7 @@ function handleWorkspaceEvent(payload) {
   }
   if (payload.t === 'clipboard') {
     const text = payload.clipboard?.text;
-    if (text) { navigator.clipboard?.writeText?.(text).catch(() => {}); toast('已同步远端剪贴板', 'success'); }
+    if (text) { window.workspace.writeClipboard(text).catch(() => {}); toast('已同步远端剪贴板', 'success'); }
     return;
   }
   if (payload.t === 'file-progress') {
@@ -1102,8 +1116,9 @@ function renderAudit() {
       <div class="toolbar" style="padding:10px 12px 0;margin-bottom:8px">
         <button class="filter-chip ${state.auditFilter === 'all' ? 'active' : ''}" data-action="audit-filter" data-value="all">全部</button>
         <button class="filter-chip ${state.auditFilter === 'connection' ? 'active' : ''}" data-action="audit-filter" data-value="connection">连接</button>
-        <button class="filter-chip ${state.auditFilter === 'unlock' ? 'active' : ''}" data-action="audit-filter" data-value="unlock">解锁</button>
+        <button class="filter-chip ${state.auditFilter === 'message' ? 'active' : ''}" data-action="audit-filter" data-value="message">消息</button>
         <button class="filter-chip ${state.auditFilter === 'grant' ? 'active' : ''}" data-action="audit-filter" data-value="grant">授权</button>
+        <button class="filter-chip ${state.auditFilter === 'file' ? 'active' : ''}" data-action="audit-filter" data-value="file">文件</button>
         <span class="spacer"></span>
         <span class="toolbar-meta">${list.length} 条事件</span>
       </div>
@@ -1470,14 +1485,6 @@ function openBusyModal(device) {
     ],
   });
 }
-function openLock() {
-  openModal(`${modalHead('锁定控制台', '本机 PIN')}
-    <div class="modal-body">
-      <div class="field"><label for="lockPin">输入 6 位 PIN</label><input class="input" id="lockPin" maxlength="6" inputmode="numeric" placeholder="••••••" autocomplete="off"><div class="hint">演示：任意 6 位数字解锁。</div></div>
-      <div class="card-note">锁定时隐藏设备名、状态和通知内容，防止肩窥。</div>
-    </div>
-    ${modalFoot(`<button class="btn" data-modal-close>取消</button><button class="btn btn-primary" data-modal-action="lock-unlock">解锁</button>`)}`, { size: 'sm' });
-}
 function openBackupModal() {
   openModal(`${modalHead('创建加密备份', 'AES-256-GCM')}
     <div class="modal-body">
@@ -1770,7 +1777,6 @@ function renderCommandList(q) {
     { label: '查看审计', icon: 'list', action: 'audit' },
     { label: '打开设置', icon: 'settings', action: 'settings' },
     { label: '切换主题', icon: 'moon', action: 'theme' },
-    { label: '锁定控制台', icon: 'lock', action: 'lock' },
   ].filter((a) => !query || a.label.toLowerCase().includes(query));
   list.innerHTML = `
     ${devices.length ? `<div class="command-group">设备</div>${devices.map((d) => `<button class="command-item" data-command-device="${d.id}"><span class="cmd-ico">${icon('monitor', 14)}</span><span class="cmd-main"><b>${esc(d.name)}</b><span>${esc(d.owner)} · ${esc(d.dept)} · ${esc(d.asset)} · ${esc(statusMeta(d).label)}</span></span><kbd>Enter</kbd></button>`).join('')}` : ''}
@@ -1787,7 +1793,6 @@ function handleCommandAction(action) {
   else if (action === 'audit') { closeCommand(); setView('audit'); }
   else if (action === 'settings') { closeCommand(); setView('settings'); }
   else if (action === 'theme') { closeCommand(); toggleTheme(); }
-  else if (action === 'lock') { closeCommand(); openLock(); }
 }
 
 /* ---------- session ---------- */
@@ -1906,7 +1911,7 @@ function promptPairCode(device) {
     state.pairResolve = resolve;
     openModal(`${modalHead('输入 6 位授权码', device.name)}
       <div class="modal-body">
-        <div class="field"><label for="pairCode">工位电脑「本机被控」中显示的 6 位码</label><input class="input" id="pairCode" maxlength="6" inputmode="numeric" placeholder="例如 482731" autocomplete="off"><div class="hint">首次连接需要授权码；授权后这台控制端会被记住。码 5 分钟有效。</div></div>
+        <div class="field"><label for="pairCode">工位电脑「本机被控」中显示的 6 位码</label><input class="input" id="pairCode" maxlength="6" inputmode="numeric" placeholder="例如 482731" autocomplete="off"><div class="hint">首次连接需要授权码；授权后这台控制端会被记住。刷新或关闭被控后旧码失效。</div></div>
       </div>
       ${modalFoot(`<button class="btn" data-modal-close>取消</button><button class="btn btn-primary" data-modal-action="pair-connect">连接</button>`)}`, { size: 'sm', label: '输入授权码' });
     setTimeout(() => document.getElementById('pairCode')?.focus(), 30);
@@ -1971,7 +1976,7 @@ function renderSession() {
         </div>
         <div class="session-hud">
           ${s.real
-            ? `<span class="hud-item"><span class="hud-dot"></span>LAN</span><span class="hud-item">JPEG · 8fps</span><span class="hud-item">${esc(s.qualityLabel)}</span>`
+            ? `<span class="hud-item"><span class="hud-dot"></span>LAN</span><span class="hud-item" id="hudCapture">${s.capture === 'gdi' ? 'GDI · JPEG' : 'JPEG'}</span><span class="hud-item">${esc(s.qualityLabel)}</span>`
             : `<span class="hud-item ${s.banner?.type === 'warn' ? 'warn' : ''}"><span class="hud-dot" style="${s.banner?.type === 'warn' ? 'background:#fbbf24' : ''}"></span>18 ms</span><span class="hud-item">60 fps</span><span class="hud-item">7.2 Mbps</span><span class="hud-item">${esc(s.qualityLabel)}</span>`}
         </div>
         <span class="spacer"></span>
@@ -1991,7 +1996,7 @@ function renderSession() {
         ${bannerHtml(s)}
         ${locked ? unlockPanelHtml(device, s) : ''}
         ${s.drawer ? sessionDrawerHtml(device, s) : ''}
-        <div class="session-hint">键盘已捕获 · Ctrl+Alt+Shift+K 释放 · 右键发送到远端</div>
+        <div class="session-hint">${s.real ? '键盘输入直送远端 · Ctrl+Alt+Shift+E 结束会话 · 切回本机请先结束会话' : '键盘已捕获 · Ctrl+Alt+Shift+K 释放 · 右键发送到远端'}</div>
       </div>
       <div class="session-bottom">
         <span class="ok">● 已连接</span>
@@ -2071,7 +2076,7 @@ function sessionDrawerHtml(device, s) {
   const startLabel = new Date(s.startAt || Date.now()).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
   return `<aside class="session-drawer"><div class="session-drawer-head"><b>会话信息</b><button class="icon-btn" data-session-action="drawer-close" aria-label="关闭">${icon('x', 15)}</button></div><div class="session-drawer-body">
     <div class="card"><div class="card-head"><b>连接</b><span class="tag ok">${s.real ? '局域网直连' : 'P2P 直连'}</span></div><dl class="kv"><dt>设备</dt><dd>${esc(device.name)}</dd><dt>主机</dt><dd class="mono">${esc(device.host)}</dd><dt>控制端</dt><dd>${s.real ? '本机' : '李伟的笔记本'}</dd><dt>开始</dt><dd>今天 ${esc(startLabel)}</dd><dt>时长</dt><dd data-session-duration>${formatDuration(s.duration)}</dd></dl></div>
-    <div class="card" style="margin-top:10px"><div class="card-head"><b>画质</b><span class="tag blue">${esc(s.qualityLabel)}</span></div><dl class="kv"><dt>请求</dt><dd>${esc(s.qualityLabel)}</dd><dt>实际</dt><dd>${s.real ? 'WS · JPEG 帧' : '1080p60 · 7.2 Mbps'}</dd><dt>显示器</dt><dd>屏幕 ${s.display} · ${esc((device.displays.find((d) => d.id === s.display) || device.displays[0]).res)}</dd><dt>延迟</dt><dd class="mono">${s.real ? '局域网' : '18 ms · 丢包 0.2%'}</dd><dt>编码</dt><dd>${s.real ? 'JPEG' : 'H.264 · 4:2:0'}</dd></dl></div>
+    <div class="card" style="margin-top:10px"><div class="card-head"><b>画质</b><span class="tag blue">${esc(s.qualityLabel)}</span></div><dl class="kv"><dt>请求</dt><dd>${esc(s.qualityLabel)}</dd><dt>实际</dt><dd>${s.real ? (s.capture === 'gdi' ? 'GDI · JPEG 帧' : 'WS · JPEG 帧') : '1080p60 · 7.2 Mbps'}</dd><dt>显示器</dt><dd>屏幕 ${s.display} · ${esc((device.displays.find((d) => d.id === s.display) || device.displays[0]).res)}</dd><dt>延迟</dt><dd class="mono">${s.real ? '局域网' : '18 ms · 丢包 0.2%'}</dd><dt>编码</dt><dd>${s.real ? (s.capture === 'gdi' ? 'GDI → JPEG' : 'JPEG') : 'H.264 · 4:2:0'}</dd></dl></div>
     <div class="card" style="margin-top:10px"><div class="card-head"><b>权限</b></div><div class="permission-summary">${PERMISSIONS.map((p) => `<span class="perm-chip ${device.permissions[p.key] ? '' : 'off'}">${icon(device.permissions[p.key] ? 'check' : 'x', 11)}${p.name}</span>`).join('')}</div><div class="card-note">${s.grant?.role === 'admin' ? '管理员临时支持：8 小时后到期；无人值守/剪贴板/文件/录制默认关闭。' : '本人设备：长期授权；录制默认关闭。'}</div></div>
     <div class="card" style="margin-top:10px"><div class="card-head"><b>安全</b></div><dl class="kv"><dt>传输</dt><dd>${s.real ? '局域网 WS · 无云端' : 'TLS 1.3 / DTLS-SRTP'}</dd><dt>审计</dt><dd>本机 + 设备</dd><dt>录制</dt><dd>${s.recording ? '录制中' : '关闭'}</dd></dl><div class="card-note">会话结束会释放按键；不保存 Windows 密码。锁屏/UAC 安全桌面需原生服务。</div></div>
     <button class="btn btn-sm" style="margin-top:10px" data-session-action="copy-diag">${icon('copy', 13)} 复制诊断信息</button>
@@ -2139,10 +2144,10 @@ async function sessionAction(action) {
   }
   if (s.real && action === 'clipboard') {
     if (!device.permissions.clipboard) { toast('当前授权未开启剪贴板', 'warn'); return; }
-    navigator.clipboard?.readText?.().then((text) => {
+    window.workspace.readClipboard().then((text) => {
       if (text) window.workspace.remote.clipboard(text);
       toast(text ? '本机剪贴板已发送到远端' : '剪贴板为空', text ? 'success' : 'warn');
-    }).catch(() => toast('无法读取本机剪贴板，请检查权限', 'warn'));
+    }).catch(() => toast('无法读取本机剪贴板', 'warn'));
     return;
   }
   if (s.real && action === 'files') {
@@ -2200,12 +2205,6 @@ async function sessionAction(action) {
     showMenu(anchor, [
       { text: s.recording ? '停止录制' : '开始录制', icon: 'record', action: () => sessionAction('record') },
       { text: '会话信息', icon: 'info', action: () => { s.drawer = 'info'; renderSession(); } },
-      { text: '发送 Ctrl+Alt+Del', icon: 'keyboard', action: () => {
-        const seq = [17, 18, 46];
-        seq.forEach((vk) => window.workspace.remote.input({ kind: 'key', action: 'down', vk }));
-        seq.slice().reverse().forEach((vk) => window.workspace.remote.input({ kind: 'key', action: 'up', vk }));
-        toast('已发送 Ctrl+Alt+Del', 'success');
-      } },
       { text: '复制诊断信息', icon: 'copy', action: () => copyText(`REMOTE device=${device.name} peer=${device.ip} quality=${s.qualityLabel} transport=ws-jpeg`, '诊断信息已复制') },
       { sep: true },
       { text: '结束会话', icon: 'power', danger: true, action: () => closeSession('用户结束') },
@@ -2428,11 +2427,6 @@ function bindModal() {
       refreshPeers().then(() => openAddDevice());
       return;
     }
-    if (act?.dataset.modalAction === 'lock-unlock') {
-      const pin = document.getElementById('lockPin')?.value || '';
-      if (pin.length !== 6) { toast('请输入 6 位 PIN', 'warn'); return; }
-      closeModal(); toast('控制台已解锁', 'success'); return;
-    }
     if (act?.dataset.modalAction === 'backup-create') {
       const p1 = document.getElementById('backupPwd')?.value || '';
       const p2 = document.getElementById('backupPwd2')?.value || '';
@@ -2590,6 +2584,9 @@ function bindRealCanvas() {
 function drawRemoteFrame(frame) {
   if (!frame || !frame.data) return;
   state.lastFrame = frame;
+  if (state.session && frame.capture) state.session.capture = frame.capture;
+  const hudCapture = document.getElementById('hudCapture');
+  if (hudCapture && frame.capture === 'gdi') hudCapture.textContent = 'GDI · JPEG';
   const canvas = document.getElementById('remoteCanvas');
   if (!canvas) return;
   const img = new Image();
@@ -2811,8 +2808,29 @@ function handleMainClick(e) {
       if (label === '启动时打开') window.workspace.setAutostart(on).catch(() => {});
       toast(on ? '已开启' : '已关闭', 'success');
     }
-    else if (a === 'session-detail') toast('会话详情（原型）', 'success');
-    else if (a === 'export-sessions') toast('会话记录已导出 CSV（原型）', 'success');
+    else if (a === 'session-detail') {
+      const s = SESSION_HISTORY.find((x) => x.id === act.dataset.sessionId);
+      if (s) {
+        const d = deviceById(s.deviceId);
+        openInfoModal({
+          title: '会话详情',
+          sub: d?.name || '本机设备',
+          body: `<dl class="kv"><dt>时间</dt><dd>${esc(s.date)}</dd><dt>时长</dt><dd>${esc(s.duration)}</dd><dt>画质</dt><dd>${esc(s.quality)}</dd><dt>延迟</dt><dd class="mono">${esc(s.latency)}</dd><dt>结果</dt><dd>${esc(s.result)}</dd><dt>结束原因</dt><dd>${esc(s.reason)}</dd></dl>`,
+          actions: [{ label: '关闭', primary: true, onClick: closeModal }],
+        });
+      }
+    }
+    else if (a === 'export-sessions') {
+      const rows = SESSION_HISTORY.filter((s) => deviceById(s.deviceId) && !deviceById(s.deviceId).demo);
+      const head = ['时间', '设备', '主机', '时长', '画质', '延迟', '结果', '结束原因'];
+      const csv = [head, ...rows.map((s) => {
+        const d = deviceById(s.deviceId);
+        return [s.date, d?.name || '', d?.host || '', s.duration, s.quality, s.latency, s.result, s.reason];
+      })].map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+      window.workspace.saveText(`nearsend-sessions-${new Date().toISOString().slice(0, 10)}.csv`, csv)
+        .then((p) => toast(p ? `会话记录已导出：${p}` : '已取消导出', p ? 'success' : 'info'))
+        .catch((err) => toast(`导出失败：${err.message}`, 'danger'));
+    }
     else if (a === 'open-agent') toggleAgent(true);
     else if (a === 'open-team-chat') window.workspace.openChat();
     else if (a === 'dm-team') { state.dmPeerId = null; renderMessages(); }
@@ -2892,7 +2910,6 @@ function bindShell() {
   document.getElementById('btnAgentPreview')?.addEventListener('click', () => toggleAgent());
   document.getElementById('btnTheme')?.addEventListener('click', toggleTheme);
   document.getElementById('btnDemo')?.addEventListener('click', (e) => showDemoMenu(e.currentTarget));
-  document.getElementById('btnLock')?.addEventListener('click', openLock);
   document.getElementById('globalSearch')?.addEventListener('click', openCommand);
   document.addEventListener('keydown', (e) => {
     if (state.session?.real) {
@@ -2907,7 +2924,6 @@ function bindShell() {
     }
     if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); openCommand(); return; }
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'a') { e.preventDefault(); toggleAgent(); return; }
-    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'l') { e.preventDefault(); openLock(); return; }
     if (e.ctrlKey && !e.altKey && /^[1-7]$/.test(e.key)) {
       const views = ['devices', 'sessions', 'messages', 'grants', 'audit', 'diagnostics', 'settings'];
       e.preventDefault(); setView(views[Number(e.key) - 1]); return;
