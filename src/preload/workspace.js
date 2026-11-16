@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('workspace', {
   theme: (theme) => ipcRenderer.invoke('workspace:theme', theme),
   setAutostart: (on) => ipcRenderer.invoke('workspace:autostart', on),
   saveRecording: (name, data) => ipcRenderer.invoke('workspace:save-recording', name, data),
+  openHelp: () => ipcRenderer.invoke('workspace:open-help'),
+  openDataDir: () => ipcRenderer.invoke('workspace:open-data-dir'),
   window: (action) => ipcRenderer.invoke('workspace:window', action),
   onEvent: (cb) => ipcRenderer.on('workspace:event', (_e, payload) => cb(payload)),
 
@@ -17,6 +19,7 @@ contextBridge.exposeInMainWorld('workspace', {
     agent: (on) => ipcRenderer.invoke('remote:agent', on),
     refreshCode: () => ipcRenderer.invoke('remote:refresh-code'),
     revokeGrant: (controllerId) => ipcRenderer.invoke('remote:revoke-grant', controllerId),
+    forgetPeer: (peerId) => ipcRenderer.invoke('remote:forget-peer', peerId),
     connect: (peerId, code, role) => ipcRenderer.invoke('remote:connect', { peerId, code, role: role === 'admin' ? 'admin' : 'owner' }),
     disconnect: () => ipcRenderer.invoke('remote:disconnect'),
     input: (evt) => ipcRenderer.send('remote:input', evt),
