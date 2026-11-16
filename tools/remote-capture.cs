@@ -33,18 +33,33 @@ class CaptureProgram
     {
         try { SetProcessDPIAware(); } catch { }
 
-        int displayIndex = Arg(args, 0, 0);
-        int targetW = Arg(args, 1, 1920);
-        int targetH = Arg(args, 2, 1080);
-        int quality = Arg(args, 3, 66);
-        int targetFps = Arg(args, 4, 12);
+        int targetW;
+        int targetH;
+        int quality;
+        int targetFps;
+        Rectangle bounds;
+        if (args != null && args.Length >= 8)
+        {
+            bounds = new Rectangle(Arg(args, 0, 0), Arg(args, 1, 0), Arg(args, 2, 1920), Arg(args, 3, 1080));
+            targetW = Arg(args, 4, 1920);
+            targetH = Arg(args, 5, 1080);
+            quality = Arg(args, 6, 66);
+            targetFps = Arg(args, 7, 15);
+        }
+        else
+        {
+            int displayIndex = Arg(args, 0, 0);
+            targetW = Arg(args, 1, 1920);
+            targetH = Arg(args, 2, 1080);
+            quality = Arg(args, 3, 66);
+            targetFps = Arg(args, 4, 12);
+            Screen[] screens = Screen.AllScreens;
+            if (screens.Length == 0) return;
+            if (displayIndex < 0 || displayIndex >= screens.Length) displayIndex = 0;
+            bounds = screens[displayIndex].Bounds;
+        }
         if (targetFps < 1) targetFps = 1;
         int interval = Math.Max(10, 1000 / targetFps);
-
-        Screen[] screens = Screen.AllScreens;
-        if (screens.Length == 0) return;
-        if (displayIndex < 0 || displayIndex >= screens.Length) displayIndex = 0;
-        Rectangle bounds = screens[displayIndex].Bounds;
         if (bounds.Width <= 0 || bounds.Height <= 0) return;
 
         double scale = Math.Min(targetW / (double)bounds.Width, targetH / (double)bounds.Height);
