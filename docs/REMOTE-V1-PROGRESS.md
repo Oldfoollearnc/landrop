@@ -83,7 +83,7 @@
 - [x] 原生 GDI 采集 helper `assets/remote-capture.exe`：1080p 约 13–15fps，2K 约 10–12fps，720p 约 20fps
 - [x] 绘制远端鼠标指针；多屏按 display_id/索引切换
 - [x] 采集 helper 随包 asarUnpack；桌面采集作为回退
-- [x] 质量/屏幕切换会重启采集 helper
+- [x] 质量/屏幕切换会重启采集 helper；双屏按物理矩形采集，不依赖显示器枚举顺序
 - [x] 高 DPI 输入映射：`dipToScreenPoint` 转物理像素
 - [x] 手动 `IP:端口` 直连（广播被禁用时）+ 手动设备持久化
 - [x] 实时 RTT（WS ping/pong）与实时帧率 HUD
@@ -97,8 +97,8 @@
 
 - 安装包：`dist/NearSend-3.0.0-Setup.exe` / `NearSend-3.0.0-Portable.exe`
 - SHA256：
-  - `7a82674d5a1c9d60160a2a3bd071b5b39f3fdf3abadd3762a65f5d0ecadbb876  NearSend-3.0.0-Setup.exe`
-  - `27cc2af9d1efa752a69feef4956a745aac4713f19bc766abb52f59c1cef8d7f4  NearSend-3.0.0-Portable.exe`
+  - `a6356265bc508e671b4fa5240ca973c079fd99f9ab0484bf70b71b9a3b2327b3  NearSend-3.0.0-Setup.exe`
+  - `8267187fd3579078c64f28caec1f57569b34ba9b498a54154c0898b654b8565f  NearSend-3.0.0-Portable.exe`
 - GitHub Release：https://github.com/Oldfoollearnc/landrop/releases/tag/v3.0.0
 - 远端 main 由 GitHub API 同步；本地分支另有提交，内容一致。
 - 打包版验证：GDI 采集约 14fps、真实 RTT/帧率 HUD、屏幕帧、键鼠注入、6 位码、手动 IP、双向文件、录制、管理员 Grant/撤销、审计持久化。
