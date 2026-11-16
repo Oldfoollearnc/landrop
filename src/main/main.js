@@ -1140,6 +1140,7 @@ async function boot() {
   remote.on('chat', (chat) => sendWorkspace('workspace:event', { t: 'chat', chat }));
   remote.on('clipboard', (clipboard) => sendWorkspace('workspace:event', { t: 'clipboard', clipboard }));
   remote.on('file-progress', (file) => sendWorkspace('workspace:event', { t: 'file-progress', file }));
+  remote.on('stats', (stats) => sendWorkspace('workspace:event', { t: 'stats', stats }));
   remote.on('audit', (audit) => sendWorkspace('workspace:event', { t: 'audit', audit }));
   await remote.init();
   createWorkspaceWindow();
