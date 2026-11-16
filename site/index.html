@@ -143,7 +143,7 @@
             </svg>
           </span>
           <h3>6 位码配对</h3>
-          <p>被控端生成 6 位配对码，控制端输入后在工位电脑确认。无需公网地址，也不用额外注册账号。</p>
+          <p>被控端生成 6 位配对码，控制端输入后建立授权；工位端会显示授权记录并可随时撤销。无需公网地址或额外账号。</p>
         </article>
 
         <article class="feature-card">
@@ -154,7 +154,7 @@
             </svg>
           </span>
           <h3>真实键鼠远控</h3>
-          <p>传输真实屏幕与键鼠输入，支持常用快捷键、滚轮、剪贴板与锁屏解锁，操作方式与坐在工位前一致。</p>
+          <p>传输真实屏幕与键鼠输入，支持常用快捷键、滚轮与剪贴板。覆盖已登录桌面，安全桌面解锁需后续原生服务。</p>
         </article>
 
         <article class="feature-card">
@@ -165,7 +165,7 @@
             </svg>
           </span>
           <h3>双屏切换 / 画质</h3>
-          <p>双屏按显示器切换查看，根据网络状况调整画质与帧率。5GHz Wi-Fi 下优先保证操作流畅。</p>
+          <p>双屏按显示器切换查看，按服务器/网络状况调整画质；5GHz Wi-Fi 下优先保证操作流畅。</p>
         </article>
 
         <article class="feature-card">
@@ -188,7 +188,7 @@
             </svg>
           </span>
           <h3>本机被控 / 授权码</h3>
-          <p>每台电脑都能作为被控端。本机授权码、连接请求与临时授权由使用者本人确认，可随时结束会话。</p>
+          <p>每台电脑都能作为被控端。本机授权码、已授权控制端、临时授权剩余时间与结束会话入口都在工位端可见。</p>
         </article>
       </div>
     </div>
@@ -233,12 +233,12 @@
       <div class="showcase-copy">
         <span class="eyebrow">远程会话</span>
         <h2 id="session-title">真实屏幕与原生键鼠，操作习惯不用改。</h2>
-        <p>会话窗口独立呈现工位屏幕，键盘、鼠标与常用快捷键直接送达被控端。需要时可在会话内解锁工位锁屏。</p>
+        <p>会话窗口独立呈现工位屏幕，键盘、鼠标与常用快捷键直接送达被控端。当前覆盖已登录的 Windows 桌面。</p>
         <ul class="spec-list">
           <li><b>画面</b><span>真实桌面串流，支持双屏切换与画质调整。</span></li>
           <li><b>输入</b><span>键鼠、滚轮、常用组合键与剪贴板。</span></li>
-          <li><b>解锁</b><span>输入 Windows 账户密码，解锁工位锁屏。</span></li>
-          <li><b>网络</b><span>局域网 P2P 直连，状态栏显示延迟与码率。</span></li>
+          <li><b>锁屏</b><span>安全桌面解锁需要原生 Windows 服务；内测版暂不覆盖锁屏与 UAC 界面。</span></li>
+          <li><b>网络</b><span>局域网直连，状态栏显示连接方式与画质。</span></li>
         </ul>
       </div>
       <figure class="showcase-figure">
@@ -296,25 +296,25 @@
             <span class="security-num" aria-hidden="true">05</span>
             <div>
               <h3>默认不录制</h3>
-              <p>会话默认不录制屏幕，也不在后台保留画面。是否留存操作记录由本机授权与审计设置决定。</p>
+              <p>会话默认不录制；需要时可由控制端在本地录制 WebM，工位端会显示录制状态。录制不经过云端。</p>
             </div>
           </article>
           <article class="security-item">
             <span class="security-num" aria-hidden="true">06</span>
             <div>
               <h3>管理员临时授权 8 小时</h3>
-              <p>管理员授权默认 8 小时到期，无人值守模式默认关闭；需要时由工位端明确开启。</p>
+              <p>管理员临时支持默认 8 小时到期，无人值守、剪贴板、文件与录制默认关闭；工位端可随时撤销。</p>
             </div>
           </article>
         </div>
 
         <figure class="security-figure">
           <div class="frame">
-            <img src="img/04-unlock.png" width="1800" height="1245" loading="lazy" decoding="async" alt="工位锁屏解锁界面：选择 Windows 账户并输入密码，PIN 与指纹不可用于远程解锁。">
+            <img src="img/06-agent.png" width="1800" height="1245" loading="lazy" decoding="async" alt="本机被控：6 位授权码、当前会话与已授权控制端列表。">
           </div>
-          <figcaption>锁屏会话：使用 Windows 账户密码解锁工位。</figcaption>
+          <figcaption>本机被控：授权码、当前会话与撤销入口。</figcaption>
           <div class="security-note">
-            <b>远程解锁的边界：</b>只接受 Windows 账户密码。PIN、指纹与面容识别仅在本机有效，不会通过网络传输。
+            <b>锁屏与安全桌面的边界：</b>Windows 安全桌面（锁屏/UAC）需要原生服务配合，内测版只覆盖已登录桌面。远程输入不使用 PIN、指纹或面容。
           </div>
         </figure>
       </div>
@@ -326,7 +326,7 @@
         </div>
         <div class="authorization-grid">
           <article class="shot-card">
-            <img src="img/06-agent.png" width="1800" height="1245" loading="lazy" decoding="async" alt="本机被控预览：显示当前控制方、会话时长、待处理请求与已授权控制端。">
+            <img src="img/06-agent.png" width="1800" height="1245" loading="lazy" decoding="async" alt="本机被控：显示授权码、当前控制方、会话时长与已授权控制端。">
             <div class="shot-card-body">
               <h4>本机被控</h4>
               <p>被控端始终可见：谁在连接、当前权限、剪贴板与文件操作，以及结束会话的入口。连接请求由本机确认。</p>
