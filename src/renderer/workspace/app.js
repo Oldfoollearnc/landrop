@@ -271,7 +271,7 @@ function peerToDevice(peer) {
     notes: peer.self ? '本机被控预览：用于单机验证屏幕与输入。' : '局域网发现的近传设备；首次连接需要 6 位授权码。',
     sessionHolder: null,
     starred: !!peer.self,
-    twoK: false,
+    twoK: true,
     demo: false,
   };
 }
@@ -516,6 +516,7 @@ function detailTabHtml(device) {
 function overviewTab(device) {
   const p = effectivePermissions(device);
   const current = state.session && state.session.deviceId === device.id && !state.session.closed;
+  const recent = SESSION_HISTORY.find((s) => s.deviceId === device.id);
   return `
     <div class="detail-grid">
       <div class="stack">
@@ -535,17 +536,17 @@ function overviewTab(device) {
           <div class="card-head"><b>${current ? '当前会话' : '最近会话'}</b><span class="card-action" data-action="view-sessions">全部记录</span></div>
           ${current ? `
             <div class="kv">
-              <dt>控制端</dt><dd>李伟的笔记本</dd>
-              <dt>开始</dt><dd>今天 14:32</dd>
-              <dt>画质</dt><dd>${esc(state.session.qualityLabel || '自动 1080p60')}</dd>
-              <dt>延迟</dt><dd class="mono">18 ms</dd>
+              <dt>控制端</dt><dd>${state.session.grant?.role === 'admin' ? '管理员临时支持' : '本机控制端'}</dd>
+              <dt>开始</dt><dd>${new Date(state.session.startAt || Date.now()).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</dd>
+              <dt>画质</dt><dd>${esc(state.session.qualityLabel || '自动 · 1080p')}</dd>
+              <dt>传输</dt><dd class="mono">${esc(state.session.capture === 'gdi' ? 'GDI · JPEG' : '局域网 WS')}</dd>
             </div>
             <div style="margin-top:10px"><button class="btn btn-sm btn-soft" data-action="resume-session">${icon('play', 13)} 返回会话</button></div>
           ` : `
             <div class="kv">
-              <dt>最近一次</dt><dd>${esc(device.lastSession)}</dd>
-              <dt>结果</dt><dd>成功</dd>
-              <dt>平均延迟</dt><dd class="mono">${device.lastSession === '—' ? '—' : '22 ms'}</dd>
+              <dt>最近一次</dt><dd>${esc(recent?.date || device.lastSession || '—')}</dd>
+              <dt>结果</dt><dd>${esc(recent?.result || '—')}</dd>
+              <dt>连接方式</dt><dd class="mono">${esc(recent?.latency || '—')}</dd>
             </div>
           `}
         </div>
@@ -566,7 +567,7 @@ function overviewTab(device) {
             <dt>硬件编码</dt><dd>${esc(device.encoder)}</dd>
             <dt>Wi-Fi</dt><dd>${esc(device.wifi)}</dd>
           </dl>
-          <div class="card-note">${device.twoK ? '预检通过；默认自动，强 Wi-Fi 下可手动 2K60。' : '当前网络/编码器不支持稳定 2K；默认 1080p。'}</div>
+          <div class="card-note">${device.twoK ? '2K 采集可用；受 JPEG/局域网限制约 10–12fps，优先 1080p 保证操作流畅。' : '当前网络条件不建议 2K；默认 1080p。'}</div>
         </div>
         <div class="card">
           <div class="card-head"><b>备注</b><span class="card-action" data-action="detail-tab" data-value="maintenance">编辑</span></div>
@@ -578,11 +579,19 @@ function overviewTab(device) {
 
 function permissionsTab(device) {
   const p = effectivePermissions(device);
-  const deviceGrants = GRANTS.filter((g) => g.deviceId === device.id);
+  const deviceGrants = device.self
+    ? (state.remote?.grants || []).map((g) => ({
+      id: g.controllerId, controller: g.name || g.controllerId, source: '本机被控授权',
+      type: g.role === 'admin' ? '管理员' : '本人',
+      perms: Object.keys(g.permissions || {}).filter((k) => g.permissions[k]),
+      expirySeconds: g.expiresAt ? Math.max(0, Math.floor((g.expiresAt - Date.now()) / 1000)) : null,
+      expiryLabel: grantRemainLabel(g), status: g.expiresAt ? '临时' : '长期', real: true,
+    }))
+    : GRANTS.filter((g) => g.deviceId === device.id);
   return `
     ${device.relation === 'managed' ? `<div class="perm-summary" style="margin-bottom:12px;background:var(--amber-soft);border-color:var(--amber-line)"><b style="color:var(--amber)">临时支持</b>：管理员授权 8 小时后自动失效；无人值守、剪贴板、文件默认关闭；员工可在工位端撤销。</div>` : ''}
     <div class="card">
-      <div class="card-head"><b>我的权限</b><span class="muted" style="font-size:10px">来自设备 · 上次同步 10:32</span></div>
+      <div class="card-head"><b>我的权限</b><span class="muted" style="font-size:10px">实时 · 本机缓存</span></div>
       <div class="perm-table" style="margin-top:0">
         ${PERMISSIONS.map((x) => `
           <div class="perm-row">
@@ -590,7 +599,7 @@ function permissionsTab(device) {
             <div class="perm-switch"><button class="switch ${p[x.key] ? 'on' : ''}" aria-checked="${p[x.key]}" aria-label="${x.name}" disabled></button></div>
           </div>`).join('')}
       </div>
-      <div class="card-note">降权/撤销立即生效；提权需工位确认。无人值守提权不能在锁屏时远程自助批准。</div>
+      <div class="card-note">撤销立即生效；角色在首次 6 位码配对时确定。无人值守策略在安全桌面场景下仍需原生服务。</div>
     </div>
     <div class="card" style="margin-top:12px">
       <div class="card-head"><b>这台设备上的授权</b><span class="card-action" data-action="open-agent">在工位电脑上管理</span></div>
@@ -599,18 +608,18 @@ function permissionsTab(device) {
           <thead><tr><th>控制端</th><th>身份</th><th>权限</th><th>到期</th><th>状态</th><th></th></tr></thead>
           <tbody>
             ${deviceGrants.map((g) => `
-              <tr data-action="open-grant" data-grant-id="${g.id}">
+              <tr ${g.real ? '' : `data-action="open-grant" data-grant-id="${g.id}"`}>
                 <td><span class="cell-main">${esc(g.controller)}</span><span class="cell-sub">${esc(g.source)}</span></td>
                 <td><span class="tag ${g.type === '管理员' ? 'admin' : ''}">${esc(g.type)}</span></td>
-                <td>${g.perms.map((k) => PERM_LABEL[k]).join('、')}</td>
+                <td>${g.perms.map((k) => PERM_LABEL[k] || k).join('、')}</td>
                 <td><span class="tag ${expiryClass(g.expirySeconds)}">${esc(g.expiryLabel)}</span></td>
                 <td>${esc(g.status)}</td>
-                <td><div class="table-actions"><button class="icon-btn" data-action="open-grant" data-grant-id="${g.id}" title="详情">${icon('chevron', 14)}</button></div></td>
+                <td><div class="table-actions">${g.real ? `<button class="btn btn-sm" data-action="revoke-inbound" data-controller-id="${esc(g.id)}">撤销</button>` : `<button class="icon-btn" data-action="open-grant" data-grant-id="${g.id}" title="详情">${icon('chevron', 14)}</button>`}</div></td>
               </tr>`).join('') || `<tr><td colspan="6"><div class="table-empty">没有其他授权控制端。</div></td></tr>`}
           </tbody>
         </table>
       </div>
-      <div class="card-note">控制端的授权列表是缓存；以工位电脑上的“授权控制端”为准。</div>
+      <div class="card-note">“控制本机的控制端”以本机被控列表为准；本页可撤销。其他设备的授权需在对应工位电脑上管理。</div>
     </div>`;
 }
 
@@ -633,16 +642,16 @@ function networkTab(device) {
             <dt>Wi-Fi</dt><dd>${esc(device.wifi)}</dd>
             <dt>编码器</dt><dd>${esc(device.encoder)}</dd>
             <dt>P2P 路径</dt><dd>直连 · ${esc(device.ip)}</dd>
-            <dt>2K 就绪</dt><dd>${device.twoK ? '是' : '否（默认 1080p）'}</dd>
-            <dt>最近延迟</dt><dd class="mono">18 ms · 丢包 0.2%</dd>
+            <dt>2K 采集</dt><dd>${device.twoK ? '可用（约 10–12fps）' : '不建议（默认 1080p）'}</dd>
+            <dt>传输</dt><dd>${device.real ? '局域网 WS · JPEG' : 'P2P · 18 ms'}</dd>
           </dl>
           <div style="margin-top:10px"><button class="btn btn-sm btn-soft" data-action="go-diagnostics">${icon('activity', 13)} 运行网络自检</button></div>
         </div>
       </div>
       <div class="stack">
         <div class="card">
-          <div class="card-head"><b>2K 建议</b><span class="tag ${device.twoK ? 'ok' : 'admin'}">${device.twoK ? '推荐' : '不建议'}</span></div>
-          <div class="card-note" style="color:var(--ink-2)">${device.twoK ? '当前硬件编码器与 5GHz Wi-Fi 满足 2K60 预检；仍建议会话中观察延迟。' : '硬件编码器/Wi-Fi 条件不足；默认 1080p，2K 可能卡顿。'}</div>
+          <div class="card-head"><b>2K 建议</b><span class="tag ${device.twoK ? 'ok' : 'admin'}">${device.twoK ? '可用' : '不建议'}</span></div>
+          <div class="card-note" style="color:var(--ink-2)">${device.twoK ? '2K 采集约 10–12fps；日常操作建议 1080p，需要看细节时可切 2K。' : '当前条件不足；默认 1080p。'}</div>
         </div>
         <div class="card">
           <div class="card-head"><b>技术详情</b></div>
@@ -671,7 +680,7 @@ function historyTab(device) {
       </div>
     </div>
     <div class="card" style="margin-top:12px">
-      <div class="card-head"><b>审计事件</b><span class="muted" style="font-size:10px">来自设备 · 上次同步 10:32</span><span class="card-action" data-action="view-audit">全部</span></div>
+      <div class="card-head"><b>审计事件</b><span class="muted" style="font-size:10px">实时 · 本机缓存</span><span class="card-action" data-action="view-audit">全部</span></div>
       <div class="table-wrap">
         <table class="data">
           <thead><tr><th>时间</th><th>事件</th><th>操作者</th><th>结果</th></tr></thead>
@@ -697,7 +706,7 @@ function maintenanceTab(device) {
         </div>
         <div class="card">
           <div class="card-head"><b>Agent 版本</b><span class="tag ${device.versionOk ? 'ok' : 'red'}">${device.versionOk ? '兼容' : '需更新'}</span></div>
-          <dl class="kv"><dt>当前</dt><dd class="mono">${esc(device.version)}</dd><dt>最低支持</dt><dd class="mono">1.0.2</dd><dt>更新方式</dt><dd>本机 MSI / 离线包</dd></dl>
+          <dl class="kv"><dt>当前</dt><dd class="mono">${esc(device.version)}</dd><dt>最低支持</dt><dd class="mono">3.0.0</dd><dt>更新方式</dt><dd>离线安装包</dd></dl>
           <div class="card-note">${device.versionOk ? '版本兼容。V1 不提供远程推送更新。' : '版本不兼容。请先在工位电脑上更新 Agent；控制端不能远程推送更新。'}</div>
         </div>
       </div>
@@ -1161,7 +1170,7 @@ function renderDiagnostics() {
   ];
   const summary = !helper ? '需修复输入组件' : peers > 1 ? '可连接' : '等待设备';
   const conclusion = peers > 1
-    ? '已发现可连接设备。建议保持两台电脑在同一 5GHz Wi-Fi；2K 会自动预检。'
+    ? '已发现可连接设备。建议保持两台电脑在同一 5GHz Wi-Fi；2K 需要更高带宽。'
     : '尚未发现其他设备。请确认对方已打开近传并开启「本机被控」，两台电脑在同一 Wi-Fi，AP 未开启客户端隔离。';
   main.innerHTML = `
     <div class="page-head">
@@ -1241,7 +1250,7 @@ function settingsContent(section) {
   if (section === 'connection') {
     return settingsGroup('连接与画质', '默认用于下一次会话；会话中仍可手动切换。', [
       settingRow('默认画质', '自动会在弱网时降档；手动选择不会被静默覆盖。', `<select class="select"><option>自动（推荐）</option><option>2K 2560×1440</option><option>1080p</option><option>720p</option></select>`),
-      settingRow('默认帧率', '2K/1080p 最高 60fps；720p 默认 30fps。', `<select class="select"><option>60 fps</option><option>30 fps</option></select>`),
+      settingRow('默认帧率', '内测版由采集端决定：1080p 约 15fps、2K 约 10–12fps。', `<span class="tag gray">自动</span>`),
       settingRow('自动降级', '网络变差时自动降低画质，保证操作流畅。', switchHtml(true, '自动降级')),
       settingRow('剪贴板默认', '仅对本人设备生效；管理员默认关闭。', switchHtml(true, '剪贴板默认')),
       settingRow('文件传输默认', '仅对本人设备生效；管理员默认关闭。', switchHtml(true, '文件传输默认')),
@@ -1720,7 +1729,7 @@ function openGrantDrawer(grantId) {
           <div class="timeline-item"><span class="timeline-dot"></span><div class="timeline-main"><b>到期</b><span>${g.expirySeconds === null ? '长期有效' : esc(g.expiryLabel)}</span></div><span class="timeline-time">${g.expirySeconds === null ? '—' : '倒计时'}</span></div>
         </div>
       </div>
-      <div class="card-note">控制端的授权列表是缓存；以工位电脑上的“授权控制端”为准。</div>
+      <div class="card-note">“控制本机的控制端”以本机被控列表为准；本页可撤销。其他设备的授权需在对应工位电脑上管理。</div>
     </div>
     <div class="drawer-foot"><button class="btn" data-drawer-close>关闭</button><span class="spacer"></span><button class="btn" data-drawer-action="revoke" data-grant-id="${g.id}" style="color:var(--red);border-color:var(--red-line);background:var(--red-soft)">撤销</button><button class="btn btn-primary" data-drawer-action="renew" data-grant-id="${g.id}">续期</button></div>
   `, '授权详情');
@@ -1785,7 +1794,7 @@ function renderCommandList(q) {
     ${!devices.length && !actions.length ? `<div class="command-empty">没有匹配的设备或命令。试试设备名、员工姓名或“添加设备”。</div>` : ''}`;
 }
 function handleCommandAction(action) {
-  if (action === 'add-device') { closeCommand(); openAddDevice(); }
+  if (action === 'add-device') { closeCommand(); state.addRole = 'owner'; openAddDevice(); }
   else if (action === 'agent') { closeCommand(); toggleAgent(true); }
   else if (action === 'team-chat') { closeCommand(); window.workspace.openChat(); }
   else if (action === 'diagnostics') { closeCommand(); setView('diagnostics'); }
@@ -2070,7 +2079,7 @@ function sessionDrawerHtml(device, s) {
       ${allowed ? `<div class="dropzone" id="dropzone" data-session-action="pick-file" style="cursor:pointer">${icon('upload', 20)}<div>选择本地文件发送到 ${esc(device.name)}</div><div style="margin-top:3px;font-size:9px">文件写入被控端下载目录 NearSend；传输记录写入审计</div></div>` : `<div class="perm-summary" style="background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.35);color:#fde68a">当前授权未开启文件传输。管理员默认关闭；请让设备所有者授权。</div>`}
       <div class="section-title" style="margin-top:13px;font-size:11px">传输队列</div>
       ${s.files.length ? s.files.map((f) => { const pct = f.done ? 100 : f.size ? Math.min(99, Math.round(((f.received || 0) / f.size) * 100)) : (f.progress || 0); return `<div class="file-row"><div class="file-ico">${icon('file', 14)}</div><div class="file-main"><b>${esc(f.name)}</b><span>${esc(f.size)} · ${f.error ? '失败' : f.done || pct >= 100 ? '已完成' : `传输中 ${pct}%`}</span><div class="file-progress"><i style="width:${pct}%"></i></div></div><button class="icon-btn" data-session-action="file-cancel" aria-label="取消">${icon('x', 14)}</button></div>`; }).join('') : `<div class="card-note" style="color:#8e9cb0">还没有文件。点击上方区域选择文件。</div>`}
-      <div style="margin-top:10px;display:flex;gap:6px"><button class="btn btn-sm" data-session-action="pick-file">${icon('upload', 13)} 选择文件</button><button class="btn btn-sm" data-session-action="file-open">${icon('folder', 13)} 说明</button></div>
+      <div style="margin-top:10px;display:flex;gap:6px"><button class="btn btn-sm" data-session-action="pick-file">${icon('upload', 13)} 选择文件</button><button class="btn btn-sm" data-session-action="file-open">${icon('folder', 13)} 打开下载目录</button></div>
       <div class="card-note" style="color:#8e9cb0;margin-top:12px">只发送到被控端；不传输文件夹/系统文件。</div>
     </div></aside>`;
   }
@@ -2248,8 +2257,8 @@ async function sessionAction(action) {
     toast('已添加示例文件', 'success'); renderSession(); return;
   }
   if (action === 'file-cancel') { s.files.pop(); renderSession(); return; }
-  if (action === 'file-open') { toast('文件保存在工位电脑的“下载/NearSend”目录', 'info'); return; }
-  if (action === 'copy-diag') { copyText('SESSION device=财务部-李伟的工位 controller=李伟的笔记本 quality=1080p60 rtt=18ms loss=0.2% encryption=DTLS-SRTP', '诊断信息已复制'); return; }
+  if (action === 'file-open') { window.workspace.openDownloads(); return; }
+  if (action === 'copy-diag') { const d = deviceById(s.deviceId); copyText(`SESSION device=${d?.name || ''} peer=${d?.ip || ''} quality=${s.qualityLabel} capture=${s.capture || 'n/a'} transport=ws-jpeg`, '诊断信息已复制'); return; }
   if (action === 'dismiss-banner') { s.banner = null; renderSession(); return; }
   if (action === 'degraded') {
     s.quality = '1080'; s.qualityLabel = '自动 · 1080p60';
@@ -2746,7 +2755,7 @@ function handleMainClick(e) {
   if (act) {
     const a = act.dataset.action;
     const device = deviceById(act.dataset.deviceId || state.selectedDeviceId);
-    if (a === 'add-device') openAddDevice();
+    if (a === 'add-device') { state.addRole = 'owner'; openAddDevice(); }
     else if (a === 'refresh') toast('状态已刷新 · 10:32', 'success');
     else if (a === 'refresh-grants') {
       window.workspace.remote.state().then((rs) => { state.remote = rs; mergeRemoteState(rs); renderGrants(); toast('授权已刷新', 'success'); }).catch(() => toast('刷新失败', 'danger'));
