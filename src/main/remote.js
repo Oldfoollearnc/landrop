@@ -56,6 +56,7 @@ class RemoteManager extends EventEmitter {
     this.deviceName = this.cfg.deviceName || os.hostname();
     this.code = six();
     this.allowed = new Set(Array.isArray(this.cfg.allowedControllers) ? this.cfg.allowedControllers : []);
+    this.grants = this.cfg.grants && typeof this.cfg.grants === 'object' ? this.cfg.grants : {};
     this.agentEnabled = this.cfg.agentEnabled !== false;
     this.wsPort = 0;
     this.wss = null;
@@ -86,6 +87,7 @@ class RemoteManager extends EventEmitter {
         deviceName: this.deviceName,
         agentEnabled: this.agentEnabled,
         allowedControllers: [...this.allowed].slice(-200),
+        grants: this.grants,
       }, null, 2));
     } catch (err) { console.error('[remote] save', err.message); }
   }
@@ -237,6 +239,10 @@ class RemoteManager extends EventEmitter {
         startedAt: this.active.startedAt,
         quality: this.active.quality,
         display: this.active.display,
+        recording: !!this.active.recording,
+        role: this.active.role,
+        permissions: this.active.permissions,
+        expiresAt: this.active.expiresAt,
       } : null;
     return {
       device: {
@@ -250,7 +256,17 @@ class RemoteManager extends EventEmitter {
       code: this.code,
       port: this.wsPort,
       peers: this.peerList(),
-      session: this.clientSession ? { ...this.clientSession } : null,
+      grants: Object.values(this.grants)
+        .filter((g) => !g.expiresAt || g.expiresAt > now())
+        .map((g) => ({
+          controllerId: g.controllerId, name: g.name, role: g.role, permissions: g.permissions,
+          createdAt: g.createdAt, expiresAt: g.expiresAt,
+        })),
+      session: this.client ? {
+        state: this.client.state,
+        peer: this.client.peer,
+        grant: this.client.grant || null,
+      } : null,
       active,
       helper: { path: this.helperPath, exists: fs.existsSync(this.helperPath) },
     };
@@ -277,6 +293,24 @@ class RemoteManager extends EventEmitter {
     return this.code;
   }
 
+  revokeGrant(controllerId) {
+    const id = String(controllerId || '');
+    if (!id) return false;
+    const revoked = this.grants[id];
+    delete this.grants[id];
+    this.allowed.delete(id);
+    this.save();
+    for (const conn of this.connections) {
+      if (conn.controller?.id === id) {
+        try { conn.ws.close(4005, 'grant revoked'); } catch {}
+      }
+    }
+    if (this.active?.controller?.id === id) this.stopActive('grant-revoked');
+    this.pushAudit('grant_revoke', revoked?.name || id, '成功', '控制端授权已撤销');
+    this.emit('state', this.state());
+    return true;
+  }
+
   // ---------- agent side ----------
   onConnection(ws, req) {
     const conn = { ws, ip: req.socket.remoteAddress, controller: null, paired: false, alive: true };
@@ -290,6 +324,10 @@ class RemoteManager extends EventEmitter {
       if (msg.t === 'start') return this.startActive(conn, msg);
       if (msg.t === 'input') return this.handleInput(msg);
       if (msg.t === 'clipboard') {
+        if (conn.permissions && conn.permissions.clipboard === false) {
+          this.send(conn.ws, { t: 'error', code: 'CLIPBOARD_DENIED', message: '当前授权未开启剪贴板' });
+          return;
+        }
         const text = String(msg.text || '').slice(0, 200000);
         this.clipboardText = text;
         this.lastAgentClipboard = text;
@@ -297,7 +335,22 @@ class RemoteManager extends EventEmitter {
         this.emit('clipboard', { text, ts: now() });
         return;
       }
-      if (msg.t === 'file-begin') return this.receiveFileBegin(conn, msg);
+      if (msg.t === 'recording') {
+        if (conn.permissions && conn.permissions.record === false) {
+          this.send(conn.ws, { t: 'error', code: 'RECORDING_DENIED', message: '当前授权未开启录制' });
+          return;
+        }
+        if (this.active) this.active.recording = !!msg.on;
+        this.emit('state', this.state());
+        return;
+      }
+      if (msg.t === 'file-begin') {
+        if (conn.permissions && conn.permissions.file === false) {
+          this.send(conn.ws, { t: 'error', code: 'FILE_DENIED', message: '当前授权未开启文件传输' });
+          return;
+        }
+        return this.receiveFileBegin(conn, msg);
+      }
       if (msg.t === 'file-chunk') return this.receiveFileChunk(conn, msg);
       if (msg.t === 'file-end') return this.receiveFileEnd(conn, msg);
       if (msg.t === 'chat') {
@@ -331,24 +384,49 @@ class RemoteManager extends EventEmitter {
     const id = String(controller.id || '').slice(0, 80);
     const name = safeName(controller.name, '同事的控制端');
     const code = String(msg.code || '').replace(/\D/g, '');
-    const allowed = id && this.allowed.has(id);
+    const role = msg.role === 'admin' ? 'admin' : 'owner';
+    let grant = id ? this.grants[id] : null;
+    if (grant && grant.expiresAt && grant.expiresAt < now()) {
+      delete this.grants[id];
+      grant = null;
+    }
+    const allowed = !!(id && this.allowed.has(id) && grant);
     if (!allowed && code !== this.code) {
       this.pushAudit('pair_failed', name, '失败', '授权码不正确');
       this.send(conn.ws, { t: 'error', code: 'PAIR_DENIED', message: '授权码不正确' });
       try { conn.ws.close(4003, 'pair denied'); } catch {}
       return;
     }
+    if (!grant) {
+      const admin = role === 'admin';
+      grant = {
+        controllerId: id,
+        name,
+        role: admin ? 'admin' : 'owner',
+        permissions: admin
+          ? { view: true, control: true, unattended: false, clipboard: false, file: false, manage: false, audit: true, record: false }
+          : { view: true, control: true, unattended: true, clipboard: true, file: true, manage: false, audit: true, record: true },
+        createdAt: now(),
+        expiresAt: admin ? now() + 8 * 60 * 60 * 1000 : null,
+      };
+      if (id) { this.grants[id] = grant; this.allowed.add(id); this.save(); }
+    }
     conn.paired = true;
     conn.controller = { id, name, ip: conn.ip };
-    if (id) { this.allowed.add(id); this.save(); }
-    this.pushAudit('pair', name, '成功', conn.ip || '');
-    this.send(conn.ws, { t: 'paired', device: this.state().device, controller: conn.controller });
+    conn.grant = grant;
+    conn.permissions = grant.permissions;
+    this.pushAudit('pair', name, '成功', `${grant.role}${grant.expiresAt ? ' · 8h' : ' · 长期'}`);
+    this.send(conn.ws, { t: 'paired', device: this.state().device, controller: conn.controller, grant });
     this.emit('state', this.state());
   }
 
   startActive(conn, msg) {
     if (!conn.paired) { this.send(conn.ws, { t: 'error', code: 'UNAUTHORIZED' }); return; }
     if (!this.agentEnabled) { this.send(conn.ws, { t: 'error', code: 'AGENT_OFF' }); return; }
+    if (!conn.grant || (conn.grant.expiresAt && conn.grant.expiresAt < now())) {
+      this.send(conn.ws, { t: 'error', code: 'GRANT_EXPIRED', message: '授权已到期' });
+      return;
+    }
     const replacing = !!(this.active && this.active.ws !== conn.ws);
     this.stopActive(replacing ? 'takeover' : 'switch', replacing);
     const display = Math.max(0, Math.min(1, Number(msg.display) || 0));
@@ -356,6 +434,7 @@ class RemoteManager extends EventEmitter {
     this.active = {
       ws: conn.ws, conn, controller: conn.controller, peerName: conn.controller?.name,
       display, quality, startedAt: now(), timer: null,
+      role: conn.grant.role, permissions: conn.grant.permissions, expiresAt: conn.grant.expiresAt,
     };
     this.lastAgentWs = conn.ws;
     const d = displayBounds(display);
@@ -364,10 +443,18 @@ class RemoteManager extends EventEmitter {
       device: this.state().device,
       display: { index: display, width: d.size.width, height: d.size.height, x: d.bounds.x, y: d.bounds.y },
       quality,
+      grant: { role: conn.grant.role, permissions: conn.grant.permissions, expiresAt: conn.grant.expiresAt },
     });
     this.pushAudit('session_start', conn.controller?.name || '控制端', '成功', `display=${display} quality=${quality}`);
     this.history.unshift({ id: rid('sess'), peer: conn.controller?.name || '控制端', startedAt: this.active.startedAt, display, quality, result: 'active' });
     if (this.history.length > 100) this.history.length = 100;
+    clearTimeout(this.grantTimer);
+    if (conn.grant.expiresAt) {
+      this.grantTimer = setTimeout(() => {
+        this.pushAudit('grant_expired', conn.controller?.name || '控制端', '成功', '临时授权到期，会话结束');
+        this.stopActive('grant-expired');
+      }, Math.max(0, conn.grant.expiresAt - now()));
+    }
     this.emit('state', this.state());
     this.startFrames();
   }
@@ -392,6 +479,10 @@ class RemoteManager extends EventEmitter {
   async captureOnce() {
     const active = this.active;
     if (!active || this.captureBusy) return;
+    if (active.expiresAt && now() > active.expiresAt + 5 * 60 * 1000) {
+      this.stopActive('grant-expired');
+      return;
+    }
     if (!active.ws || active.ws.readyState !== WebSocket.OPEN) { this.stopActive('ws-closed'); return; }
     this.captureBusy = true;
     try {
@@ -420,8 +511,10 @@ class RemoteManager extends EventEmitter {
   stopActive(reason, notify = true) {
     clearInterval(this.frameTimer);
     clearInterval(this.clipboardTimer);
+    clearTimeout(this.grantTimer);
     this.frameTimer = null;
     this.clipboardTimer = null;
+    this.grantTimer = null;
     if (this.active) {
       const name = this.active.controller?.name || '控制端';
       this.pushAudit('session_end', name, '成功', reason || '');
@@ -480,7 +573,7 @@ class RemoteManager extends EventEmitter {
   }
 
   // ---------- controller side ----------
-  async connect(peerId, code) {
+  async connect(peerId, code, role = 'owner') {
     const peer = this.peers.get(peerId);
     if (!peer) throw new Error('设备不在线');
     if (this.client) this.disconnect();
@@ -506,6 +599,7 @@ class RemoteManager extends EventEmitter {
           t: 'pair',
           controller: { id: this.client.controllerId, name: this.deviceName },
           code: String(code || '').replace(/\D/g, ''),
+          role: role === 'admin' ? 'admin' : 'owner',
         });
       });
       ws.on('message', (raw) => {
@@ -517,6 +611,7 @@ class RemoteManager extends EventEmitter {
           if (timer) clearTimeout(timer);
           this.client.state = 'active';
           this.client.device = msg.device;
+          this.client.grant = msg.grant || null;
           this.client.peerName = peer.name;
           this.send(ws, { t: 'start', display: 0, quality: 'auto' });
           this.emit('session', { state: 'active', peer, device: msg.device });
@@ -526,10 +621,14 @@ class RemoteManager extends EventEmitter {
         if (msg.t === 'started') {
           this.client.display = msg.display;
           this.client.quality = msg.quality || 'auto';
-          this.emit('session', { state: 'active', peer, display: msg.display, quality: msg.quality });
+          if (msg.grant) this.client.grant = msg.grant;
+          this.emit('session', { state: 'active', peer, display: msg.display, quality: msg.quality, grant: this.client.grant });
           return;
         }
         if (msg.t === 'frame') { this.emit('frame', msg); return; }
+        if (msg.t === 'file-begin') { this.receiveFileBegin({ ws, paired: true }, msg); return; }
+        if (msg.t === 'file-chunk') { this.receiveFileChunk({ ws, paired: true }, msg); return; }
+        if (msg.t === 'file-end') { this.receiveFileEnd({ ws, paired: true }, msg); return; }
         if (msg.t === 'clipboard') { this.emit('clipboard', msg); return; }
         if (msg.t === 'chat') { this.emit('chat', { ...msg, direction: 'in', from: peer.name }); return; }
         if (msg.t === 'chat:ack') return;
@@ -558,9 +657,11 @@ class RemoteManager extends EventEmitter {
     const c = this.client;
     if (!c) return;
     try { this.send(c.ws, { t: 'stop' }); } catch {}
-    try { c.ws.close(); } catch {}
+    try {
+      if (c.ws.readyState === WebSocket.CONNECTING) c.ws.terminate();
+      else c.ws.close();
+    } catch {}
     this.client = null;
-    this.emit('session', { state: 'ended', reason: 'local', peer: c.peer });
   }
 
   sendInput(evt) {
@@ -611,6 +712,36 @@ class RemoteManager extends EventEmitter {
     this.emit('file-progress', { id: f.id, name: f.name, size: f.size, received: f.received, done: true, direction: 'in', path: f.target });
   }
 
+  async sendFileToActive(filePath) {
+    const active = this.active;
+    if (!active || !active.ws || active.ws.readyState !== WebSocket.OPEN) return null;
+    let st;
+    try { st = fs.statSync(filePath); } catch { return null; }
+    if (!st.isFile()) return null;
+    const id = rid('file');
+    const name = safeFileName(path.basename(filePath));
+    const size = st.size;
+    const ws = active.ws;
+    this.send(ws, { t: 'file-begin', id, name, size });
+    const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 });
+    let sent = 0;
+    stream.on('data', (buf) => {
+      this.send(ws, { t: 'file-chunk', id, offset: sent, data: buf.toString('base64') });
+      sent += buf.length;
+      const ts = now();
+      if (!stream.lastEmit || ts - stream.lastEmit > 300) {
+        stream.lastEmit = ts;
+        this.emit('file-progress', { id, name, size, received: sent, done: false, direction: 'out-agent' });
+      }
+    });
+    stream.on('end', () => {
+      this.send(ws, { t: 'file-end', id });
+      this.emit('file-progress', { id, name, size, received: sent, done: true, direction: 'out-agent' });
+    });
+    this.pushAudit('file_out', this.deviceName, '开始', name);
+    return { id, name, size };
+  }
+
   async sendFile(filePath) {
     if (!this.client || this.client.state !== 'active') return null;
     let st;
@@ -649,6 +780,10 @@ class RemoteManager extends EventEmitter {
     if (!this.client || this.client.state !== 'active') return;
     this.client.quality = quality;
     this.send(this.client.ws, { t: 'start', display: this.client.display || 0, quality });
+  }
+  setRecording(on) {
+    if (!this.client || this.client.state !== 'active') return;
+    this.send(this.client.ws, { t: 'recording', on: !!on });
   }
   sendChatToActive(text) {
     const value = String(text || '').trim().slice(0, 4000);
@@ -701,6 +836,7 @@ class RemoteManager extends EventEmitter {
   stop() {
     clearInterval(this.frameTimer);
     clearInterval(this.clipboardTimer);
+    clearTimeout(this.grantTimer);
     clearInterval(this.udpTimer);
     clearInterval(this.pruneTimer);
     if (this.client) this.disconnect();
