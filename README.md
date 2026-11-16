@@ -7,7 +7,7 @@
 ## 近传 3.0 · 远程工位
 
 - **一个应用，两个工作区**：设备控制台 + 团队群聊；群聊继续兼容手机扫码/网页端。
-- **局域网 P2P**：设备发现走 UDP，屏幕/输入/剪贴板/文件走控制端与被控端直连；没有 Hub、没有云端中转。
+- **局域网 P2P**：设备发现走 UDP，屏幕/输入/剪贴板/文件走控制端与被控端直连；没有 Hub、没有云端中转。广播被禁用时可手动输入 `IP:端口`。
 - **真实远控**：控制端采集工位桌面画面，鼠标/键盘通过 Windows `SendInput` 注入；当前采集为 Windows GDI + JPEG（1080p 约 15fps、2K 约 10–12fps），后续替换 WebRTC。
 - **本机被控**：右上角笔记本图标 / `Ctrl+Shift+A` 打开本机被控，显示 6 位授权码、IP、端口、当前会话；可暂停/恢复、结束会话。
 - **6 位码配对**：首次连接输入工位电脑显示的 6 位码，之后控制端会被记住。
@@ -32,7 +32,8 @@ npm run dist       # NSIS + Portable（Windows x64）
 
 - 需要 Windows 10/11 x64；同一 Wi-Fi/VLAN；输入注入组件 `assets/remote-input.exe` 已随包分发。
 - 真实锁屏/UAC 安全桌面需要 Windows 服务，当前版本只覆盖已登录桌面；发布页已列出限制。
-- 远程传输层为 WS + JPEG（内网可用），2K/60fps/WebRTC 是后续迭代；不承诺公网、WoL、4K、手机控制端。
+- 远程传输层为 Windows GDI + WS + JPEG（1080p 约 15fps）；WebRTC/2K60 是后续迭代；不承诺公网、WoL、4K、手机控制端。
+- 端口：UDP 47822 发现、UDP 47823 私聊、TCP 47820–47839 会话；防火墙需放通。
 
 ### 目录
 
@@ -55,7 +56,7 @@ npm run dist       # NSIS + Portable（Windows x64）
 群主是一台常驻托盘的 Windows 电脑；其他设备——手机、平板、**另一台电脑**——都用浏览器扫码加入，
 不安装 App。群主电脑负责消息、成员、权限和文件落盘，离开这个 Wi-Fi 就进不了群。
 
-> 完整架构、协议、UI 与边界见 [docs/GROUP-CHAT.md](docs/GROUP-CHAT.md)。
+> 群聊完整架构见 [docs/GROUP-CHAT.md](docs/GROUP-CHAT.md)；远程工位架构、端口与边界见 [docs/REMOTE-V1-ARCHITECTURE.md](docs/REMOTE-V1-ARCHITECTURE.md)。
 
 ---
 
