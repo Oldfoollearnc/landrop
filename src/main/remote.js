@@ -19,7 +19,7 @@ const { spawn } = require('child_process');
 const APP_TAG = 'nearsend-remote';
 const UDP_PORT = 47822;
 const WS_START = 47820;
-const FRAME_MS = 200;
+const FRAME_MS = 120;
 
 function now() { return Date.now(); }
 function rid(prefix) { return `${prefix}_${crypto.randomBytes(6).toString('hex')}`; }
@@ -57,18 +57,22 @@ class RemoteManager extends EventEmitter {
     this.code = six();
     this.allowed = new Set(Array.isArray(this.cfg.allowedControllers) ? this.cfg.allowedControllers : []);
     this.grants = this.cfg.grants && typeof this.cfg.grants === 'object' ? this.cfg.grants : {};
+    this.knownPeers = this.cfg.knownPeers && typeof this.cfg.knownPeers === 'object' ? this.cfg.knownPeers : {};
     this.agentEnabled = this.cfg.agentEnabled !== false;
     this.wsPort = 0;
     this.wss = null;
     this.udp = null;
     this.peers = new Map();
+    this.knownSaveTimer = null;
     this.connections = new Set();
     this.active = null; // { ws, controller, display, quality, timer }
     this.frameTimer = null;
     this.captureBusy = false;
     this.helper = null;
     this.helperPath = this.resolveHelper();
-    this.audit = [];
+    this.auditFile = path.join(userDataDir, 'remote-audit.json');
+    this.audit = this.loadAudit();
+    this.auditTimer = null;
     this.history = [];
     this.clipboardText = '';
     this.incomingFiles = new Map();
@@ -77,6 +81,25 @@ class RemoteManager extends EventEmitter {
 
   load() {
     try { return JSON.parse(fs.readFileSync(this.file, 'utf8')) || {}; } catch { return {}; }
+  }
+  loadAudit() {
+    try {
+      const arr = JSON.parse(fs.readFileSync(this.auditFile, 'utf8'));
+      return Array.isArray(arr) ? arr.slice(0, 500) : [];
+    } catch { return []; }
+  }
+  saveAudit() {
+    try {
+      fs.mkdirSync(path.dirname(this.auditFile), { recursive: true });
+      fs.writeFileSync(this.auditFile, JSON.stringify(this.audit.slice(0, 500), null, 2));
+    } catch (err) { console.error('[remote] save audit', err.message); }
+  }
+  saveAuditSoon() {
+    if (this.auditTimer) return;
+    this.auditTimer = setTimeout(() => {
+      this.auditTimer = null;
+      this.saveAudit();
+    }, 1500);
   }
   save() {
     try {
@@ -88,6 +111,7 @@ class RemoteManager extends EventEmitter {
         agentEnabled: this.agentEnabled,
         allowedControllers: [...this.allowed].slice(-200),
         grants: this.grants,
+        knownPeers: this.knownPeers,
       }, null, 2));
     } catch (err) { console.error('[remote] save', err.message); }
   }
@@ -101,6 +125,7 @@ class RemoteManager extends EventEmitter {
     await this.startWs();
     this.startUdp();
     this.startDm();
+    this.loadKnownPeers();
     this.addSelfPeer();
     if (this.agentEnabled && process.env.NEARSEND_SELF_PREVIEW !== '0') {
       // 本机预览：不依赖 UDP 回环，直接把 127.0.0.1 作为一台设备显示。
@@ -143,6 +168,7 @@ class RemoteManager extends EventEmitter {
             };
             if (!peer.port) return;
             this.peers.set(peer.id, peer);
+            this.rememberPeer(peer);
             this.emit('peers', this.peerList());
           }
         } catch { /* ignore malformed */ }
@@ -156,7 +182,10 @@ class RemoteManager extends EventEmitter {
         const t = now();
         let changed = false;
         for (const [id, p] of this.peers) {
-          if (!p.self && t - p.lastSeen > 9000) { this.peers.delete(id); changed = true; }
+          if (!p.self && p.online && t - p.lastSeen > 9000) {
+            p.online = false;
+            changed = true;
+          }
         }
         if (changed) this.emit('peers', this.peerList());
       }, 3000);
@@ -186,6 +215,7 @@ class RemoteManager extends EventEmitter {
     const peer = this.peers.get(peerId);
     if (!value || !peer || !this.dm) return null;
     if (peer.self) return null;
+    if (!peer.online) return null;
     const evt = { from: this.deviceName, fromId: this.deviceId, text: value, ts: now(), direction: 'out' };
     try {
       this.dm.send(Buffer.from(JSON.stringify({
@@ -194,6 +224,36 @@ class RemoteManager extends EventEmitter {
     } catch (err) { console.error('[remote] dm send', err.message); return null; }
     this.pushAudit('chat_out', this.deviceName, '成功', value.slice(0, 80));
     return evt;
+  }
+
+  loadKnownPeers() {
+    for (const p of Object.values(this.knownPeers || {})) {
+      if (!p || !p.id || p.id === this.deviceId) continue;
+      if (this.peers.has(p.id)) continue;
+      this.peers.set(p.id, {
+        id: p.id, name: safeName(p.name, p.id), ip: p.ip || '', port: Number(p.port) || 0,
+        os: p.os || 'Windows', version: p.version || '', online: false,
+        lastSeen: Number(p.lastSeen) || 0, self: false,
+        displayCount: Math.max(1, Math.min(2, Number(p.displayCount) || 1)),
+      });
+    }
+  }
+
+  saveKnownSoon() {
+    if (this.knownSaveTimer) return;
+    this.knownSaveTimer = setTimeout(() => {
+      this.knownSaveTimer = null;
+      this.save();
+    }, 4000);
+  }
+
+  rememberPeer(peer) {
+    this.knownPeers[peer.id] = {
+      id: peer.id, name: peer.name, ip: peer.ip, port: peer.port,
+      os: peer.os, version: peer.version, lastSeen: peer.lastSeen,
+      displayCount: peer.displayCount || 1,
+    };
+    this.saveKnownSoon();
   }
 
   addSelfPeer(force) {
@@ -293,8 +353,20 @@ class RemoteManager extends EventEmitter {
     return this.code;
   }
 
-  revokeGrant(controllerId) {
-    const id = String(controllerId || '');
+  forgetPeer(peerId) {
+    const id = String(peerId || '');
+    if (!id) return false;
+    const peer = this.peers.get(id);
+    if (peer?.self) return false;
+    this.peers.delete(id);
+    delete this.knownPeers[id];
+    this.save();
+    this.emit('peers', this.peerList());
+    this.emit('state', this.state());
+    return true;
+  }
+
+  revokeGrant(controllerId) {    const id = String(controllerId || '');
     if (!id) return false;
     const revoked = this.grants[id];
     delete this.grants[id];
@@ -576,6 +648,7 @@ class RemoteManager extends EventEmitter {
   async connect(peerId, code, role = 'owner') {
     const peer = this.peers.get(peerId);
     if (!peer) throw new Error('设备不在线');
+    if (!peer.online) throw new Error('设备离线：开机并打开近传后再试');
     if (this.client) this.disconnect();
     const url = `ws://${peer.self ? '127.0.0.1' : peer.ip}:${peer.port}`;
     const ws = new WebSocket(url);
@@ -813,6 +886,7 @@ class RemoteManager extends EventEmitter {
     const e = { id: rid('evt'), ts: now(), type, actor, result, detail };
     this.audit.unshift(e);
     if (this.audit.length > 500) this.audit.length = 500;
+    this.saveAuditSoon();
     this.emit('audit', e);
   }
   getAudit() { return this.audit.slice(0, 200); }
@@ -837,6 +911,11 @@ class RemoteManager extends EventEmitter {
     clearInterval(this.frameTimer);
     clearInterval(this.clipboardTimer);
     clearTimeout(this.grantTimer);
+    clearTimeout(this.knownSaveTimer);
+    clearTimeout(this.auditTimer);
+    this.knownSaveTimer = null;
+    this.auditTimer = null;
+    try { this.save(); this.saveAudit(); } catch {}
     clearInterval(this.udpTimer);
     clearInterval(this.pruneTimer);
     if (this.client) this.disconnect();
