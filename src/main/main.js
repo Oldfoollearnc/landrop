@@ -865,6 +865,11 @@ function registerIpc() {
     core.setTheme(workspaceTheme);
     return workspaceTheme;
   });
+  ipcMain.handle('workspace:autostart', async (_e, on) => {
+    config.patch({ autostart: !!on });
+    const st = await autostart.sync(!!on);
+    return !!st.enabled;
+  });
   ipcMain.handle('workspace:window', (_e, action) => {
     if (!workspaceWin || workspaceWin.isDestroyed()) return false;
     if (action === 'minimize') workspaceWin.minimize();

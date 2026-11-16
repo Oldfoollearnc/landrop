@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('workspace', {
   chatSummary: () => ipcRenderer.invoke('workspace:chat-summary'),
   openChat: () => ipcRenderer.invoke('workspace:open-chat'),
   theme: (theme) => ipcRenderer.invoke('workspace:theme', theme),
+  setAutostart: (on) => ipcRenderer.invoke('workspace:autostart', on),
   window: (action) => ipcRenderer.invoke('workspace:window', action),
   onEvent: (cb) => ipcRenderer.on('workspace:event', (_e, payload) => cb(payload)),
 

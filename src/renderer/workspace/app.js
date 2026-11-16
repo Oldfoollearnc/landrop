@@ -2575,6 +2575,7 @@ function handleMainClick(e) {
       const label = act.getAttribute('aria-label') || '';
       state.uiSettings[label] = on;
       try { localStorage.setItem('ns-ui-settings', JSON.stringify(state.uiSettings)); } catch {}
+      if (label === '启动时打开') window.workspace.setAutostart(on).catch(() => {});
       toast(on ? '已开启' : '已关闭', 'success');
     }
     else if (a === 'session-detail') toast('会话详情（原型）', 'success');
