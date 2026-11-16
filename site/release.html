@@ -89,7 +89,7 @@
       <section class="release-section" id="overview" aria-labelledby="overview-title">
         <h2 id="overview-title">版本概览</h2>
         <p class="release-intro">V1.0.0 是近传 · 远程工位的第一个内部内测版本，面向同一局域网内的 Windows 办公电脑。控制端与被控端通过 P2P 直连，不经过云端；设备授权、临时权限与审计记录留在工位端。</p>
-        <p class="release-intro">本次发布覆盖从配对、连接到解锁、协作的完整流程，并保留了明确的边界：仅限同一 Wi-Fi 或 VLAN，不提供公网穿透与集中管理。</p>
+        <p class="release-intro">本次发布覆盖从配对、连接到控制、文件与协作的完整流程，并保留了明确的边界：仅限同一 Wi-Fi 或 VLAN，不提供公网穿透与集中管理。</p>
         <div class="note"><b>内测说明：</b>版本仍在内部试用阶段。请通过内部 IT 获取安装包，不要对外分发或用于生产环境的无人值守场景。</div>
       </section>
 
@@ -140,7 +140,7 @@
           </article>
           <article class="release-item">
             <span class="release-check" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg></span>
-            <div><b>锁屏解锁</b><span>在远程会话中输入 Windows 账户密码解锁工位。</span></div>
+            <div><b>本机被控与授权</b><span>6 位码配对、授权列表、录制状态与随时撤销；管理员临时支持默认 8 小时。</span></div>
           </article>
         </div>
       </section>
@@ -171,8 +171,8 @@
             <span>锁屏与 UAC 安全桌面需要原生服务配合，当前版本不能保证在所有机型上完成此类操作。</span>
           </div>
           <div class="limit-item">
-            <b>文件传输方向</b>
-            <span>当前仅支持控制端向被控端发送文件，反向传输尚未开放。</span>
+            <b>文件传输范围</b>
+            <span>控制端可发送到被控端；被控端会话中也可“发送文件给控制端”。完整的远程文件浏览器尚未开放。</span>
           </div>
           <div class="limit-item">
             <b>无 Hub / 无集中管理</b>
@@ -184,7 +184,7 @@
           </div>
           <div class="limit-item">
             <b>会话录制</b>
-            <span>录制入口按默认关闭处理；真实录制管线尚未接入，后续版本补齐。</span>
+            <span>录制默认关闭；当前由控制端在本地录制 WebM，尚未接入服务端保留策略、录制审计与员工拒绝流程。</span>
           </div>
         </div>
       </section>
@@ -231,7 +231,7 @@
               <tr><th scope="row">画面</th><td>支持 1080p 至 2K，双屏可切换</td></tr>
               <tr><th scope="row">安装与更新</th><td>内测安装包与离线更新包，由内部 IT 分发</td></tr>
               <tr><th scope="row">账号</th><td>使用本机 Windows 账户，不新建产品账号</td></tr>
-              <tr><th scope="row">远程解锁</th><td>仅支持 Windows 账户密码；PIN、指纹与面容不可远程使用</td></tr>
+              <tr><th scope="row">锁屏 / 安全桌面</th><td>内测版暂不支持；需要原生 Windows 服务。PIN、指纹与面容不用于远程输入</td></tr>
             </tbody>
           </table>
         </div>
