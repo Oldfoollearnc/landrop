@@ -87,6 +87,8 @@
 - [x] 高 DPI 输入映射：`dipToScreenPoint` 转物理像素
 - [x] 手动 `IP:端口` 直连（广播被禁用时）+ 手动设备持久化
 - [x] 实时 RTT（WS ping/pong）与实时帧率 HUD
+- [x] 已授权控制端免码重连；撤销后自动要求重新输入 6 位码
+- [x] 文件接收重名自动加序号；管理员/受限授权不会自动推送剪贴板
 - [x] 架构/端口/安全边界文档 `docs/REMOTE-V1-ARCHITECTURE.md`
 - [ ] 最终重打包 + Release 资产覆盖 + 文档/远端同步
 - [ ] 后续：安全桌面、WebRTC/2K60、完整远程文件浏览器、录制保留策略
@@ -95,8 +97,8 @@
 
 - 安装包：`dist/NearSend-3.0.0-Setup.exe` / `NearSend-3.0.0-Portable.exe`
 - SHA256：
-  - `d9de244998148f1fef3d31245e51c21260792c56cbf303474d283544e980b27e  NearSend-3.0.0-Setup.exe`
-  - `cbd67e0e9fbd0a690e51754992917b8d094a301a34c61f0cbdd5aac640e9e3ca  NearSend-3.0.0-Portable.exe`
+  - `fc48395220d81ac2f2d2b738fcfa69df3ccf348cc9ebab49127ce0a007943241  NearSend-3.0.0-Setup.exe`
+  - `d739a6218189b3911b03eb36c09d6dc9a2de48efd34864a12784bab2aaf60435  NearSend-3.0.0-Portable.exe`
 - GitHub Release：https://github.com/Oldfoollearnc/landrop/releases/tag/v3.0.0
 - 远端 main 由 GitHub API 同步；本地分支另有提交，内容一致。
 - 打包版验证：GDI 采集约 14fps、真实 RTT/帧率 HUD、屏幕帧、键鼠注入、6 位码、手动 IP、双向文件、录制、管理员 Grant/撤销、审计持久化。
