@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('workspace', {
   saveText: (name, content) => ipcRenderer.invoke('workspace:save-text', name, content),
   openHelp: () => ipcRenderer.invoke('workspace:open-help'),
   openDataDir: () => ipcRenderer.invoke('workspace:open-data-dir'),
+  openDownloads: () => ipcRenderer.invoke('workspace:open-downloads'),
   readClipboard: () => ipcRenderer.invoke('workspace:read-clipboard'),
   writeClipboard: (text) => ipcRenderer.invoke('workspace:write-clipboard', text),
   window: (action) => ipcRenderer.invoke('workspace:window', action),
