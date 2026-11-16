@@ -589,6 +589,7 @@ class RemoteManager extends EventEmitter {
     this.clipboardTimer = setInterval(() => {
       const active = this.active;
       if (!active || !active.ws || active.ws.readyState !== WebSocket.OPEN) return;
+      if (active.permissions && active.permissions.clipboard === false) return;
       let text = '';
       try { text = clipboard.readText(); } catch {}
       if (text && text !== this.lastAgentClipboard) {
@@ -895,10 +896,21 @@ class RemoteManager extends EventEmitter {
     const size = Number(msg.size) || 0;
     const dir = path.join(app.getPath('downloads'), 'NearSend');
     try { fs.mkdirSync(dir, { recursive: true }); } catch {}
-    const target = path.join(dir, name);
+    let saveName = name;
+    let target = path.join(dir, saveName);
+    try {
+      const ext = path.extname(name);
+      const stem = path.basename(name, ext);
+      let i = 1;
+      while (fs.existsSync(target) && i < 500) {
+        saveName = `${stem} (${i})${ext}`;
+        target = path.join(dir, saveName);
+        i += 1;
+      }
+    } catch {}
     const stream = fs.createWriteStream(target, { flags: 'w' });
-    this.incomingFiles.set(id, { id, name, size, received: 0, target, stream });
-    this.send(conn.ws, { t: 'file-accept', id, name });
+    this.incomingFiles.set(id, { id, name: saveName, size, received: 0, target, stream });
+    this.send(conn.ws, { t: 'file-accept', id, name: saveName });
     this.pushAudit('file_in', conn.controller?.name || '控制端', '开始', name);
     this.emit('file-progress', { id, name, size, received: 0, direction: 'in' });
   }
@@ -930,6 +942,7 @@ class RemoteManager extends EventEmitter {
   async sendFileToActive(filePath) {
     const active = this.active;
     if (!active || !active.ws || active.ws.readyState !== WebSocket.OPEN) return null;
+    if (active.permissions && active.permissions.file === false) return null;
     let st;
     try { st = fs.statSync(filePath); } catch { return null; }
     if (!st.isFile()) return null;
