@@ -56,7 +56,7 @@ npm run dist       # NSIS + Portable（Windows x64）
 群主是一台常驻托盘的 Windows 电脑；其他设备——手机、平板、**另一台电脑**——都用浏览器扫码加入，
 不安装 App。群主电脑负责消息、成员、权限和文件落盘，离开这个 Wi-Fi 就进不了群。
 
-> 群聊完整架构见 [docs/GROUP-CHAT.md](docs/GROUP-CHAT.md)；远程工位架构、端口与边界见 [docs/REMOTE-V1-ARCHITECTURE.md](docs/REMOTE-V1-ARCHITECTURE.md)。
+> 群聊完整架构见 [docs/GROUP-CHAT.md](docs/GROUP-CHAT.md)；远程工位架构、端口与边界见 [docs/REMOTE-V1-ARCHITECTURE.md](docs/REMOTE-V1-ARCHITECTURE.md)；内部部署/回滚见 [docs/DEPLOYMENT-3.0.md](docs/DEPLOYMENT-3.0.md)。
 
 ---
 
