@@ -97,8 +97,8 @@
 
 - 安装包：`dist/NearSend-3.0.0-Setup.exe` / `NearSend-3.0.0-Portable.exe`
 - SHA256：
-  - `fc48395220d81ac2f2d2b738fcfa69df3ccf348cc9ebab49127ce0a007943241  NearSend-3.0.0-Setup.exe`
-  - `d739a6218189b3911b03eb36c09d6dc9a2de48efd34864a12784bab2aaf60435  NearSend-3.0.0-Portable.exe`
+  - `7a82674d5a1c9d60160a2a3bd071b5b39f3fdf3abadd3762a65f5d0ecadbb876  NearSend-3.0.0-Setup.exe`
+  - `27cc2af9d1efa752a69feef4956a745aac4713f19bc766abb52f59c1cef8d7f4  NearSend-3.0.0-Portable.exe`
 - GitHub Release：https://github.com/Oldfoollearnc/landrop/releases/tag/v3.0.0
 - 远端 main 由 GitHub API 同步；本地分支另有提交，内容一致。
 - 打包版验证：GDI 采集约 14fps、真实 RTT/帧率 HUD、屏幕帧、键鼠注入、6 位码、手动 IP、双向文件、录制、管理员 Grant/撤销、审计持久化。
