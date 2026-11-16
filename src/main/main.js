@@ -865,8 +865,18 @@ function registerIpc() {
     core.setTheme(workspaceTheme);
     return workspaceTheme;
   });
-  ipcMain.handle('workspace:save-recording', async (_e, name, data) => {
-    const safeName = String(name || 'NearSend-session.webm').replace(/[\\/:*?"<>|]/g, '_');
+  ipcMain.handle('workspace:save-text', async (_e, name, content) => {
+    const safeName = String(name || 'nearsend.txt').replace(/[\\/:*?"<>|]/g, '_');
+    const r = await dialog.showSaveDialog(workspaceWin, {
+      title: '保存文件',
+      defaultPath: path.join(app.getPath('downloads'), safeName),
+      filters: [{ name: '文本文件', extensions: ['csv', 'txt', 'json'] }],
+    });
+    if (r.canceled || !r.filePath) return null;
+    fs.writeFileSync(r.filePath, String(content || ''), 'utf8');
+    return r.filePath;
+  });
+  ipcMain.handle('workspace:save-recording', async (_e, name, data) => {    const safeName = String(name || 'NearSend-session.webm').replace(/[\\/:*?"<>|]/g, '_');
     const r = await dialog.showSaveDialog(workspaceWin, {
       title: '保存会话录制',
       defaultPath: path.join(app.getPath('downloads'), safeName),
@@ -897,6 +907,12 @@ function registerIpc() {
   ipcMain.handle('workspace:open-data-dir', () => {
     shell.openPath(app.getPath('userData'));
     return true;
+  });
+  ipcMain.handle('workspace:read-clipboard', () => {
+    try { return clipboard.readText(); } catch { return ''; }
+  });
+  ipcMain.handle('workspace:write-clipboard', (_e, text) => {
+    try { clipboard.writeText(String(text || '')); return true; } catch { return false; }
   });
 
   // ---------- 远程工位 ----------
