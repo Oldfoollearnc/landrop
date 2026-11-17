@@ -177,6 +177,48 @@ const { RemoteManager } = require(path.join(__dirname, '..', 'src', 'main', 'rem
     twoKOn1080.width === 1920 && twoKOn1080.height === 1080,
     JSON.stringify(twoKOn1080));
 
+  // 同事私聊文件：接收端重组并落盘
+  const dmChats = [];
+  const dmAcks = [];
+  manager.on('chat', (c) => dmChats.push(c));
+  manager.receiveDMFileBegin({
+    id: 'dm-file-1', name: 'dm-note.txt', size: 4, total: 1,
+    kind: 'file', mime: 'text/plain', from: '同事A', fromId: 'peer-a',
+  }, (p) => dmAcks.push(p));
+  manager.receiveDMFileChunk({
+    id: 'dm-file-1', seq: 0, data: Buffer.from('abcd').toString('base64'),
+  }, (p) => dmAcks.push(p));
+  check('私聊文件能重组落盘',
+    fs.existsSync(path.join(dlDir, 'dm-note.txt'))
+      && fs.readFileSync(path.join(dlDir, 'dm-note.txt'), 'utf8') === 'abcd');
+  check('私聊文件会回 ready/ack',
+    dmAcks.some((m) => m.t === 'dm-file-ready') && dmAcks.some((m) => m.t === 'dm-file-ack'));
+  check('私聊文件完成后发出 chat 事件',
+    dmChats.some((c) => c.kind === 'file' && c.name === 'dm-note.txt' && c.path));
+
+  // 发送端：收到 ready/ack 后按顺序发完
+  const dmSource = path.join(tmp, 'dm-source.txt');
+  fs.writeFileSync(dmSource, 'hello');
+  manager.peers.set('peer-a', {
+    id: 'peer-a', name: '同事A', ip: '127.0.0.1', port: 47820, online: true, self: false,
+  });
+  const dmSent = [];
+  manager.dm = {
+    send: (buf, port, ip) => {
+      const msg = JSON.parse(buf.toString('utf8'));
+      dmSent.push(msg);
+      if (msg.t === 'dm-file-begin') manager.resolveDmAck(`ready:${msg.id}`);
+      if (msg.t === 'dm-file-chunk') manager.resolveDmAck(`ack:${msg.id}:${msg.seq}`);
+    },
+    close: () => {},
+  };
+  const dmMeta = await manager.sendDMFile('peer-a', dmSource);
+  check('私聊文件发送端完成 begin/chunk/end',
+    !!dmMeta && dmMeta.kind === 'file'
+      && dmSent.some((m) => m.t === 'dm-file-begin')
+      && dmSent.some((m) => m.t === 'dm-file-chunk')
+      && dmSent.some((m) => m.t === 'dm-file-end'));
+
   manager.stop();
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(failures ? `\n${failures} 项失败` : '\n全部通过');

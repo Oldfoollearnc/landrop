@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, clipboard, nativeImage, dialog, shell, Notification } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, clipboard, nativeImage, dialog, shell, Notification, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -29,8 +29,8 @@ const PAD = 48;
 const MARGIN = 12;
 const RECALL_MS = 2 * 60 * 1000;
 
-const BG_DARK = '#0a0a0b';
-const BG_LIGHT = '#ffffff';
+const BG_DARK = '#121210';
+const BG_LIGHT = '#f5f4f1';
 
 let win = null;
 let workspaceWin = null;
@@ -205,6 +205,10 @@ const core = {
 
 function applyWindowTheme() {
   if (win && !win.isDestroyed()) win.setBackgroundColor(windowBg());
+  if (workspaceWin && !workspaceWin.isDestroyed()) {
+    workspaceWin.setBackgroundColor(workspaceTheme === 'dark' ? '#121210' : '#f5f4f1');
+  }
+  try { nativeTheme.themeSource = workspaceTheme === 'dark' ? 'dark' : 'light'; } catch {}
 }
 
 function stopOpacity() {
@@ -368,7 +372,7 @@ function createWorkspaceWindow() {
     frame: false,
     minWidth: 1024,
     minHeight: 640,
-    backgroundColor: config.get('theme') === 'dark' ? '#0f1115' : '#f5f7fa',
+    backgroundColor: config.get('theme') === 'dark' ? '#121210' : '#f5f4f1',
     show: false,
     title: '近传 · 远程工位',
     icon: asset('icon.ico'),
@@ -377,11 +381,19 @@ function createWorkspaceWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      webviewTag: true,
       spellcheck: false,
       backgroundThrottling: false,
     },
   });
   workspaceWin.setMenu(null);
+  workspaceWin.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const target = new URL(url);
+      if (target.protocol === 'http:' || target.protocol === 'https:') shell.openExternal(url);
+    } catch {}
+    return { action: 'deny' };
+  });
   workspaceWin.loadFile(path.join(__dirname, '..', 'renderer', 'workspace', 'index.html'), {
     query: process.env.NEARSEND_PANEL ? { panel: process.env.NEARSEND_PANEL } : {},
   });
@@ -432,6 +444,42 @@ function showChat() {
 }
 
 // ---------- 加入别人的群聊（桌面端不必扫码） ----------
+async function probeGroup(rawUrl) {
+  let url;
+  try {
+    url = new URL(String(rawUrl || '').trim());
+  } catch {
+    return { ok: false, error: '邀请链接格式不正确' };
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { ok: false, error: '只支持局域网 http/https 邀请链接' };
+  }
+  if (String(rawUrl).length > 2048) return { ok: false, error: '链接过长' };
+  const token = url.searchParams.get('t');
+  if (!token) return { ok: false, error: '链接里缺少访问令牌，请从群主电脑重新复制完整邀请链接' };
+  const target = new URL('/api/room', url);
+  target.searchParams.set('t', token);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4500);
+  try {
+    const res = await fetch(target, { signal: controller.signal, headers: { Accept: 'application/json' } });
+    if (!res.ok) return { ok: false, error: `群聊暂时不可达（${res.status}）` };
+    const data = await res.json();
+    const room = data.room || {};
+    return {
+      ok: true,
+      name: room.name || room.host || '加入的群聊',
+      host: url.host,
+      url: url.toString(),
+      members: Array.isArray(data.members) ? data.members.length : 0,
+    };
+  } catch (err) {
+    return { ok: false, error: err.name === 'AbortError' ? '连接超时，请确认群主电脑在线' : '无法连接群聊' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function openJoinWindow(rawUrl) {
   let url;
   try {
@@ -964,6 +1012,7 @@ function registerIpc() {
     chat: chatSummaryPayload(),
     remote: remote ? remote.state() : null,
     home: os.hostname(),
+    url: currentUrl,
   }));
   ipcMain.handle('workspace:chat-summary', () => chatSummaryPayload());
   ipcMain.handle('workspace:open-chat', () => { showChat(); return true; });
@@ -981,6 +1030,7 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle('group:join', (_e, url) => openJoinWindow(url));
+  ipcMain.handle('group:probe', (_e, url) => probeGroup(url));
   ipcMain.handle('workspace:theme', (_e, theme) => {
     workspaceTheme = theme === 'dark' ? 'dark' : 'light';
     core.setTheme(workspaceTheme);
@@ -1036,6 +1086,7 @@ function registerIpc() {
     shell.openPath(app.getPath('userData'));
     return true;
   });
+  ipcMain.handle('workspace:open-path', (_e, filePath) => shell.openPath(String(filePath || '')));
   ipcMain.handle('workspace:open-downloads', () => {
     const dir = path.join(app.getPath('downloads'), 'NearSend');
     try { fs.mkdirSync(dir, { recursive: true }); } catch {}
@@ -1067,6 +1118,20 @@ function registerIpc() {
   ipcMain.handle('remote:disconnect', () => { if (remote) remote.disconnect(); return true; });
   ipcMain.handle('remote:end-active', () => { if (remote) remote.stopActive('manual'); return remote ? remote.state() : null; });
   ipcMain.handle('remote:dm', (_e, payload) => (remote ? remote.sendDM(String(payload?.peerId || ''), String(payload?.text || '')) : null));
+  ipcMain.handle('remote:dm-file', async (_e, peerId) => {
+    if (!remote) return null;
+    const r = await dialog.showOpenDialog(workspaceWin, {
+      title: '发送图片或文件给同事',
+      properties: ['openFile'],
+      buttonLabel: '发送',
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    try {
+      return await remote.sendDMFile(String(peerId || ''), r.filePaths[0]);
+    } catch (err) {
+      return { error: err.message || '发送失败' };
+    }
+  });
   ipcMain.handle('remote:pick-file', async () => {
     if (!remote) return null;
     const r = await dialog.showOpenDialog(workspaceWin, {
@@ -1266,6 +1331,7 @@ async function boot() {
   }
   // 工作台和群聊小窗共用同一个主题真源，避免打开群聊时把深色又切回浅色
   workspaceTheme = config.get('theme') === 'dark' ? 'dark' : 'light';
+  try { nativeTheme.themeSource = workspaceTheme; } catch {}
   applyInstallerPrefs();
 
   const saveDir = config.get('saveDir');

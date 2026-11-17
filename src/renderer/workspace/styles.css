@@ -2521,3 +2521,71 @@ table.data tbody tr:hover { background: var(--surface-subtle); }
   .main.inspector-open > .ledger { margin-right: 0; }
   .main.inspector-open > .device-page-head { padding-right: 0; }
 }
+/* 会话工具条：默认自动隐藏，贴顶浮出；可固定 */
+.session-shell.auto-hide .session-top {
+  opacity: 0; transform: translateY(calc(-100% - 20px)); pointer-events: none;
+  transition: opacity .16s var(--rd-ease), transform .2s var(--rd-ease);
+}
+.session-shell.auto-hide.chrome-visible .session-top {
+  opacity: 1; transform: translateY(0); pointer-events: auto;
+}
+.session-shell.fullscreen .session-top { top: 12px; left: 12px; right: 12px; }
+.session-handle {
+  display: none; position: absolute; left: 50%; top: 7px; z-index: 7;
+  width: 46px; height: 4px; margin-left: -23px; border-radius: 999px;
+  background: rgba(255,255,255,.34); box-shadow: 0 1px 4px rgba(0,0,0,.45);
+  pointer-events: none;
+}
+.session-shell.auto-hide:not(.chrome-visible) .session-handle { display: block; }
+/* 诊断分数：线性刻度，避免饼图在小尺寸/深色下渲染异常 */
+.diag-meter { flex: 0 0 150px; display: flex; flex-direction: column; gap: 7px; }
+.diag-meter-head { display: flex; align-items: baseline; gap: 4px; }
+.diag-meter-head b { font: 600 24px/1 var(--rd-font-mono); color: var(--green); font-variant-numeric: tabular-nums; }
+.diag-meter-head span { font-size: 10px; color: var(--ink-3); }
+.diag-meter-bar { height: 4px; border-radius: 999px; background: var(--surface-muted); overflow: hidden; }
+.diag-meter-bar i { display: block; height: 100%; border-radius: 999px; background: var(--green); }
+.diag-meter.warn .diag-meter-head b { color: var(--amber); }
+.diag-meter.warn .diag-meter-bar i { background: var(--amber); }
+/* 消息页：内嵌完整群聊 / 多群 / 同事列表 */
+.messages-main.group-main { padding: 0; overflow: hidden; }
+.chat-embed-wrap { flex: 1; min-height: 0; display: flex; background: var(--surface); }
+.chat-embed { width: 100%; height: 100%; border: 0; display: flex; background: var(--surface); }
+.chat-embed-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 30px; }
+.chat-embed-empty b { font-size: 14px; font-weight: 600; }
+.chat-embed-empty p { margin: 0 0 6px; color: var(--ink-3); font-size: 11.5px; line-height: 1.6; }
+.conv-add {
+  margin-left: auto; padding: 0 2px; background: transparent; border: 0;
+  color: var(--blue); font-size: 10.5px; font-weight: 500; white-space: nowrap;
+}
+.conv-add:hover { text-decoration: underline; }
+.conv-remove {
+  width: 20px; height: 20px; flex: 0 0 auto; display: grid; place-items: center;
+  border-radius: 4px; color: var(--ink-3); opacity: 0;
+  background: transparent; border: 0;
+}
+.conversation-item:hover .conv-remove, .conversation-item.active .conv-remove { opacity: 1; }
+.conv-remove:hover { background: var(--red-soft); color: var(--red); }
+.conv-empty { padding: 4px 10px 10px; color: var(--ink-3); font-size: 10.5px; line-height: 1.6; }
+.conv-picker { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow: auto; }
+.conv-picker-row { display: flex; align-items: center; gap: 9px; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+.conv-picker-row:last-child { border-bottom: 0; }
+.conv-picker-row .conv-main { flex: 1; min-width: 0; }
+@media (max-width: 900px) {
+  .chat-embed-wrap { min-height: 420px; }
+}
+.toast-root { z-index: 130; }
+/* 同事私聊：图片/文件 */
+.dm-attach { flex: 0 0 auto; width: 36px; height: 36px; border-radius: 6px; color: var(--ink-3); }
+.dm-attach:hover { background: var(--surface-muted); color: var(--ink); }
+.dm-image { display: block; max-width: 100%; max-height: 300px; border-radius: 5px; object-fit: contain; background: var(--surface-subtle); }
+.dm-file-card {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 8px; border: 1px solid var(--line-strong); border-radius: 6px;
+  background: transparent; color: inherit; text-align: left;
+}
+.dm-file-card:hover { background: var(--surface-muted); }
+.dm-file-ico { width: 28px; height: 28px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid currentColor; border-radius: 5px; opacity: .8; }
+.dm-file-card b { display: block; font-size: 11.5px; font-weight: 600; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-file-card small { display: block; margin-top: 2px; font-size: 9.5px; opacity: .65; }
+.dm-row.out .dm-file-card { border-color: rgba(255,255,255,.28); }
+.dm-row.out .dm-file-card:hover { background: rgba(255,255,255,.1); }

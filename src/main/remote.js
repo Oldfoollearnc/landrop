@@ -20,6 +20,10 @@ const { spawn } = require('child_process');
 const APP_TAG = 'nearsend-remote';
 const UDP_PORT = 47822;
 const WS_START = 47820;
+// 画面帧最多允许 1MB 积压；超过就丢帧，避免 TCP 队列把操作延迟拖到几秒
+const FRAME_BUFFER_LIMIT = 1024 * 1024;
+const DM_CHUNK = 24 * 1024;
+const DM_MAX = 20 * 1024 * 1024;
 
 function now() { return Date.now(); }
 function rid(prefix) { return `${prefix}_${crypto.randomBytes(6).toString('hex')}`; }
@@ -34,6 +38,13 @@ function safeFileName(name) {
 }
 function six() { return String(crypto.randomInt(100000, 1000000)); }
 function safeName(s, fallback) { return String(s || '').replace(/\s+/g, ' ').trim().slice(0, 80) || fallback; }
+function mimeOf(name) {
+  const ext = path.extname(String(name || '')).toLowerCase();
+  return ({
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+    '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
+  })[ext] || 'application/octet-stream';
+}
 /** 文件发送背压：缓冲降到低水位就立刻续读，不按固定时间硬等，尽量跑满局域网带宽 */
 function resumeWhenDrained(stream, ws) {
   const check = () => {
@@ -107,6 +118,9 @@ class RemoteManager extends EventEmitter {
     this.incomingFiles = new Map();
     this.incomingPaths = new Set();
     this.outgoingFiles = new Map();
+    this.dmIncoming = new Map();
+    this.dmPaths = new Set();
+    this.dmAcks = new Map();
     this.save();
   }
 
@@ -264,10 +278,27 @@ class RemoteManager extends EventEmitter {
     try {
       this.dm = dgram.createSocket({ type: 'udp4', reuseAddr: true });
       this.dm.on('error', (err) => console.error('[remote] dm', err.message));
-      this.dm.on('message', (buf) => {
+      this.dm.on('message', (buf, rinfo) => {
         try {
           const msg = JSON.parse(buf.toString('utf8'));
           if (!msg || msg.ns !== 'nearsend-dm' || msg.to !== this.deviceId) return;
+          if (msg.t === 'dm-file-ready') { this.resolveDmAck(`ready:${msg.id}`); return; }
+          if (msg.t === 'dm-file-ack') { this.resolveDmAck(`ack:${msg.id}:${msg.seq}`); return; }
+          if (msg.t === 'dm-file-error') {
+            const f = this.dmIncoming.get(String(msg.id || ''));
+            if (f) {
+              this.dmIncoming.delete(f.id);
+              this.dmPaths.delete(f.target);
+              this.emit('chat', { from: f.from || '同事', fromId: f.fromId || '', kind: 'error', text: String(msg.message || '文件传输失败'), ts: now(), direction: 'in' });
+            }
+            return;
+          }
+          const ack = (payload) => {
+            try { this.dm.send(Buffer.from(JSON.stringify(payload)), rinfo.port, rinfo.address); } catch {}
+          };
+          if (msg.t === 'dm-file-begin') { this.receiveDMFileBegin(msg, ack); return; }
+          if (msg.t === 'dm-file-chunk') { this.receiveDMFileChunk(msg, ack); return; }
+          if (msg.t === 'dm-file-end') return;
           const text = String(msg.text || '').trim().slice(0, 4000);
           if (!text) return;
           this.pushAudit('chat_in', msg.from || '同事', '成功', text.slice(0, 80));
@@ -292,6 +323,158 @@ class RemoteManager extends EventEmitter {
     } catch (err) { console.error('[remote] dm send', err.message); return null; }
     this.pushAudit('chat_out', this.deviceName, '成功', value.slice(0, 80));
     return evt;
+  }
+
+  dmSendWithAck(payload, key, timeout = 1800) {
+    return new Promise((resolve, reject) => {
+      const peer = this.peers.get(payload.to);
+      if (!peer || !peer.ip || !this.dm) { reject(new Error('对方不在线')); return; }
+      let tries = 0;
+      let timer = null;
+      const done = () => {
+        if (timer) clearTimeout(timer);
+        this.dmAcks.delete(key);
+        resolve();
+      };
+      const send = () => {
+        tries += 1;
+        if (tries > 3) {
+          this.dmAcks.delete(key);
+          reject(new Error('对方未确认接收'));
+          return;
+        }
+        try {
+          this.dm.send(Buffer.from(JSON.stringify(payload)), 47823, peer.ip);
+        } catch (err) {
+          this.dmAcks.delete(key);
+          reject(err);
+          return;
+        }
+        timer = setTimeout(send, timeout);
+      };
+      this.dmAcks.set(key, done);
+      send();
+    });
+  }
+
+  resolveDmAck(key) {
+    const done = this.dmAcks.get(key);
+    if (done) done();
+  }
+
+  async sendDMFile(peerId, filePath) {
+    const peer = this.peers.get(String(peerId || ''));
+    if (!peer || !peer.online || peer.self || !this.dm) return null;
+    let st;
+    try { st = fs.statSync(filePath); } catch { return null; }
+    if (!st.isFile() || st.size > DM_MAX) throw new Error('文件为空或超过 20MB');
+    const name = safeFileName(path.basename(filePath));
+    const mime = mimeOf(name);
+    const kind = mime.startsWith('image/') ? 'image' : 'file';
+    const buf = fs.readFileSync(filePath);
+    const total = Math.max(1, Math.ceil(buf.length / DM_CHUNK));
+    const id = rid('dmfile');
+    const fromId = this.deviceId;
+    const from = this.deviceName;
+    const ts = now();
+    await this.dmSendWithAck({
+      ns: 'nearsend-dm', t: 'dm-file-begin', fromId, from, to: peerId,
+      id, name, size: buf.length, mime, kind, total, ts,
+    }, `ready:${id}`, 2500);
+    for (let seq = 0; seq < total; seq += 1) {
+      const data = buf.subarray(seq * DM_CHUNK, (seq + 1) * DM_CHUNK).toString('base64');
+      await this.dmSendWithAck({
+        ns: 'nearsend-dm', t: 'dm-file-chunk', fromId, from, to: peerId,
+        id, seq, data,
+      }, `ack:${id}:${seq}`, 1800);
+    }
+    try {
+      this.dm.send(Buffer.from(JSON.stringify({
+        ns: 'nearsend-dm', t: 'dm-file-end', fromId, from, to: peerId, id,
+      })), 47823, peer.ip);
+    } catch {}
+    this.pushAudit('chat_out', this.deviceName, '成功', `${kind} ${name}`);
+    return {
+      id, name, size: buf.length, mime, kind, text: `[${kind === 'image' ? '图片' : '文件'}] ${name}`,
+      path: filePath, ts, direction: 'out',
+    };
+  }
+
+  receiveDMFileBegin(msg, ack) {
+    const id = String(msg.id || '').slice(0, 80);
+    const size = Math.max(0, Math.floor(Number(msg.size) || 0));
+    const total = Math.max(1, Math.floor(Number(msg.total) || 0));
+    const name = safeFileName(msg.name);
+    if (!id || size > DM_MAX || total > Math.ceil(DM_MAX / DM_CHUNK) + 1) {
+      ack({ ns: 'nearsend-dm', t: 'dm-file-error', id, fromId: this.deviceId, to: msg.fromId, message: '文件过大或声明无效' });
+      return;
+    }
+    if (this.dmIncoming.has(id)) {
+      const old = this.dmIncoming.get(id);
+      this.dmIncoming.delete(id);
+      this.dmPaths.delete(old.target);
+    }
+    const dir = path.join(app.getPath('downloads'), 'NearSend');
+    try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+    let saveName = name;
+    let target = path.join(dir, saveName);
+    try {
+      const ext = path.extname(name);
+      const stem = path.basename(name, ext);
+      let i = 1;
+      while ((fs.existsSync(target) || this.dmPaths.has(target)) && i < 500) {
+        saveName = `${stem} (${i})${ext}`;
+        target = path.join(dir, saveName);
+        i += 1;
+      }
+    } catch {}
+    this.dmPaths.add(target);
+    this.dmIncoming.set(id, {
+      id, name: saveName, size, total, target, kind: msg.kind === 'image' ? 'image' : 'file',
+      mime: String(msg.mime || ''), from: String(msg.from || '同事'), fromId: String(msg.fromId || ''),
+      chunks: new Map(), received: 0, failed: false,
+    });
+    ack({ ns: 'nearsend-dm', t: 'dm-file-ready', id, fromId: this.deviceId, to: msg.fromId });
+  }
+
+  receiveDMFileChunk(msg, ack) {
+    const f = this.dmIncoming.get(String(msg.id || ''));
+    if (!f || f.failed) return;
+    const seq = Number(msg.seq);
+    if (!Number.isInteger(seq) || seq < 0 || seq >= f.total) return;
+    if (!f.chunks.has(seq)) {
+      let buf;
+      try { buf = Buffer.from(String(msg.data || ''), 'base64'); } catch { return; }
+      if (buf.length > DM_CHUNK + 1024) return;
+      f.chunks.set(seq, buf);
+      f.received += buf.length;
+    }
+    ack({ ns: 'nearsend-dm', t: 'dm-file-ack', id: f.id, seq, fromId: this.deviceId, to: f.fromId });
+    if (f.chunks.size < f.total) return;
+    const parts = [];
+    for (let i = 0; i < f.total; i += 1) {
+      const part = f.chunks.get(i);
+      if (!part) return;
+      parts.push(part);
+    }
+    try {
+      const buf = Buffer.concat(parts);
+      if (f.size && buf.length !== f.size) throw new Error('文件大小不一致');
+      fs.writeFileSync(f.target, buf);
+      this.dmIncoming.delete(f.id);
+      this.dmPaths.delete(f.target);
+      this.pushAudit('chat_in', f.from || '同事', '成功', `${f.kind} ${f.name}`);
+      this.emit('chat', {
+        from: f.from || '同事', fromId: f.fromId || '',
+        kind: f.kind, text: `[${f.kind === 'image' ? '图片' : '文件'}] ${f.name}`,
+        name: f.name, size: buf.length, mime: f.mime, path: f.target, ts: now(), direction: 'in',
+      });
+    } catch (err) {
+      f.failed = true;
+      this.dmIncoming.delete(f.id);
+      this.dmPaths.delete(f.target);
+      ack({ ns: 'nearsend-dm', t: 'dm-file-error', id: f.id, fromId: this.deviceId, to: f.fromId, message: err.message });
+    }
   }
 
   loadKnownPeers() {
@@ -796,7 +979,7 @@ class RemoteManager extends EventEmitter {
           // 传输文件时降低画面到约 1fps，把带宽让给文件；传完自动恢复
           if (!this.frameBudgetForFileTransfer()) return;
           if (!active.ws || active.ws.readyState !== WebSocket.OPEN) return;
-          if (active.ws.bufferedAmount > 8 * 1024 * 1024) return;
+          if (active.ws.bufferedAmount > FRAME_BUFFER_LIMIT) return;
           const i1 = line.indexOf(' ');
           const i2 = line.indexOf(' ', i1 + 1);
           if (i1 < 0 || i2 < 0) return;
@@ -838,16 +1021,16 @@ class RemoteManager extends EventEmitter {
   captureProfile(quality, displayIndex) {
     const bounds = physicalBounds(displayBounds(displayIndex));
     const preset = quality === '4k'
-      ? { width: 3840, height: 2160, quality: 86, fps: 8 }
+      ? { width: 3840, height: 2160, quality: 86, fps: 10 }
       : quality === '2k'
-        ? { width: 2560, height: 1440, quality: 86, fps: 12 }
+        ? { width: 2560, height: 1440, quality: 86, fps: 15 }
         : quality === '1080'
-          ? { width: 1920, height: 1080, quality: 86, fps: 15 }
+          ? { width: 1920, height: 1080, quality: 86, fps: 20 }
           : quality === '720'
-            ? { width: 1280, height: 720, quality: 82, fps: 20 }
+            ? { width: 1280, height: 720, quality: 82, fps: 24 }
             : bounds.width >= 2560
-              ? { width: 2560, height: 1440, quality: 86, fps: 12 }
-              : { width: 1920, height: 1080, quality: 86, fps: 15 };
+              ? { width: 2560, height: 1440, quality: 86, fps: 15 }
+              : { width: 1920, height: 1080, quality: 86, fps: 20 };
     const scale = Math.min(1, preset.width / Math.max(1, bounds.width), preset.height / Math.max(1, bounds.height));
     return {
       width: Math.max(2, Math.round(bounds.width * scale)),
@@ -907,7 +1090,7 @@ class RemoteManager extends EventEmitter {
         capture: this.captureMode || 'electron',
       };
       // 弱网时 ws 缓冲会无限长；GDI 采集路径已有同样保护
-      if (active.ws.bufferedAmount > 8 * 1024 * 1024) return;
+      if (active.ws.bufferedAmount > FRAME_BUFFER_LIMIT) return;
       this.send(active.ws, frame);
       this.lastFrameErrorAt = 0;
     } catch (err) {
@@ -1527,6 +1710,12 @@ class RemoteManager extends EventEmitter {
     for (const c of this.connections) { try { c.ws.close(); } catch {} }
     if (this.wss) { try { this.wss.close(); } catch {} }
     if (this.udp) { try { this.udp.close(); } catch {} }
+    for (const f of this.dmIncoming.values()) {
+      try { fs.unlink(f.target, () => {}); } catch {}
+    }
+    this.dmIncoming.clear();
+    this.dmPaths.clear();
+    this.dmAcks.clear();
     if (this.dm) { try { this.dm.close(); } catch {} }
     if (this.helper) { try { this.helper.kill(); } catch {} }
   }

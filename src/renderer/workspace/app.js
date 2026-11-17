@@ -6,6 +6,8 @@ const ICONS = {
   monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
   expand: '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"/>',
   compress: '<path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5"/>',
+  pin: '<path d="M9 3h6l-1 5 3 3v2h-4v6l-1 2-1-2v-6H7v-2l3-3z"/>',
+  paperclip: '<path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.8 1.8 0 0 1-2.5-2.5l7.9-7.9"/>',
   cursorArrow: '<path d="M4 2.5l14.5 8.2-6.7 1.4-2.8 6.3z" fill="currentColor" stroke="none"/>',
   laptop: '<rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2.5 20h19"/>',
   play: '<path d="M8 5.5v13l10-6.5z" fill="currentColor" stroke="none"/>',
@@ -228,6 +230,10 @@ const state = {
   diag: null,
   peers: [],
   chat: null,
+  roomUrl: '',
+  roomUrlLoading: false,
+  joinedGroups: loadJoinedGroups(),
+  activeGroupId: null,
   lastFrame: null,
   frameRect: null,
   dmPeerId: null,
@@ -871,6 +877,7 @@ async function init() {
       try { localStorage.setItem('rd-theme', state.theme); } catch {}
     }
     state.chat = payload.chat || null;
+    state.roomUrl = payload.url || '';
     if (payload.remote) mergeRemoteState(payload.remote);
     state.diag = await window.workspace.remote.diagnostics().catch(() => null);
     const audit = await window.workspace.remote.audit().catch(() => []);
@@ -985,13 +992,14 @@ function handleWorkspaceEvent(payload) {
   if (payload.t === 'chat') {
     const chat = payload.chat || {};
     const peerId = chat.fromId || chat.from || 'peer';
-    if (!chat.text) return;
+    if (!chat.text && !chat.path) return;
     pushDM(peerId, { ...chat, direction: 'in' });
     if (state.view === 'messages' && state.dmPeerId === peerId) renderMessages();
     else {
       state.incomingUnread += 1;
       refreshUnreadBadge();
-      toast(`${chat.from || '同事'}：${String(chat.text).slice(0, 28)}`, 'info');
+      const label = chat.kind === 'image' ? '发来一张图片' : chat.kind === 'file' ? `发来文件 ${chat.name || ''}` : String(chat.text || '').slice(0, 28);
+      toast(`${chat.from || '同事'}：${label}`, 'info');
     }
     return;
   }
@@ -1037,8 +1045,10 @@ function handleWorkspaceEvent(payload) {
   }
   if (payload.t === 'chat-summary') {
     state.chat = payload.chat;
+    if (hasEmbeddedTeam()) state.chat.unread = 0;
     refreshUnreadBadge();
-    if (state.view === 'messages') renderMessages();
+    // 群聊已嵌在主区 iframe 里时不要重建消息页，否则会把正在使用的群聊刷新掉
+    if (state.view === 'messages' && !hasEmbeddedTeam() && !state.activeGroupId) renderMessages();
     return;
   }
   if (payload.t === 'unread') {
@@ -1057,6 +1067,23 @@ function handleWorkspaceEvent(payload) {
   }
 }
 /* ---------- messages view ---------- */
+function loadJoinedGroups() {
+  try {
+    const list = JSON.parse(localStorage.getItem('ns-joined-groups') || '[]');
+    return Array.isArray(list) ? list.filter((g) => g && g.id && /^https?:\/\//i.test(String(g.url || ''))).slice(0, 20) : [];
+  } catch {
+    return [];
+  }
+}
+function saveJoinedGroups() {
+  try { localStorage.setItem('ns-joined-groups', JSON.stringify(state.joinedGroups.slice(0, 20))); } catch {}
+}
+function activeJoinedGroup() {
+  return state.joinedGroups.find((g) => g.id === state.activeGroupId) || null;
+}
+function hasEmbeddedTeam() {
+  return !state.dmPeerId && !state.activeGroupId && !!state.roomUrl;
+}
 function dmKey(peerId) { return `ns-dm:${peerId}`; }
 function loadDM(peerId) {
   if (!state.dmConversations[peerId]) {
@@ -1079,9 +1106,9 @@ function pushDM(peerId, msg) {
 }
 function openJoinGroupModal() {
   openInfoModal({
-    title: '加入其他人的群聊',
-    sub: '桌面端无需扫码：粘贴群主复制出来的邀请链接',
-    body: `<div class="field"><label for="joinGroupUrl">邀请链接</label><input class="input" id="joinGroupUrl" placeholder="http://192.168.1.5:8899/?t=..." autocomplete="off"><div class="card-note" style="margin-top:7px;line-height:1.7">在群主电脑的「团队群聊 → 邀请成员」里复制链接。加入后会打开一个独立聊天窗口，和浏览器打开的是同一个群聊。</div></div>`,
+    title: '加入群聊',
+    sub: '粘贴群主复制出来的邀请链接',
+    body: `<div class="field"><label for="joinGroupUrl">邀请链接</label><input class="input" id="joinGroupUrl" placeholder="http://192.168.1.5:8899/?t=..." autocomplete="off"><div class="card-note" style="margin-top:7px;line-height:1.7">加入后会在当前消息页里直接打开完整群聊，可以同时加入多个群。也可以继续在手机/浏览器里打开同一个链接。</div></div>`,
     actions: [
       { label: '取消', onClick: closeModal },
       {
@@ -1091,13 +1118,31 @@ function openJoinGroupModal() {
           const value = (input?.value || '').trim();
           if (!value) { toast('请粘贴邀请链接', 'warn'); return; }
           try {
-            const res = await window.workspace.joinGroup(value);
-            if (res && res.ok) {
-              closeModal();
-              toast('已打开加入的群聊窗口', 'success');
-            } else {
-              toast((res && res.error) || '加入失败', 'danger');
+            const res = await window.workspace.probeGroup(value);
+            if (!res || !res.ok) {
+              toast((res && res.error) || '无法加入这个群聊', 'danger');
+              return;
             }
+            const same = state.joinedGroups.find((g) => g.url === res.url);
+            if (same) {
+              state.activeGroupId = same.id;
+            } else {
+              const group = {
+                id: `g-${Date.now().toString(36)}`,
+                name: res.name || '加入的群聊',
+                host: res.host || '',
+                url: res.url,
+                addedAt: Date.now(),
+              };
+              state.joinedGroups.unshift(group);
+              state.joinedGroups = state.joinedGroups.slice(0, 20);
+              saveJoinedGroups();
+              state.activeGroupId = group.id;
+            }
+            state.dmPeerId = null;
+            closeModal();
+            setView('messages');
+            toast(`已加入 ${res.name || '群聊'}`, 'success');
           } catch (err) {
             toast(err.message || '加入失败', 'danger');
           }
@@ -1118,64 +1163,131 @@ function openJoinGroupModal() {
   }, 50);
 }
 
+function openAddColleagueModal() {
+  const peers = (state.peers || []).filter((p) => !p.self);
+  const rows = peers.length
+    ? peers.map((p) => `<div class="conv-picker-row"><span class="conv-avatar">${icon('user', 14)}</span><span class="conv-main"><b>${esc(p.name)}</b><span>${esc(p.ip)} · ${p.online ? '在线' : '离线'}</span></span><span class="tag ${p.online ? 'ok' : 'gray'}">${p.online ? '可私聊' : '离线'}</span></div>`).join('')
+    : `<div class="conv-empty" style="padding:14px 0">还没有发现同事。让同事在这台电脑附近打开近传，保持同一 Wi-Fi，几秒后会自动出现。</div>`;
+  openInfoModal({
+    title: '添加同事私聊',
+    sub: '同一 Wi-Fi 自动发现，不需要扫码',
+    body: `<div class="conv-picker">${rows}</div><div class="card-note" style="margin-top:12px;line-height:1.7">私聊走局域网 UDP，当前支持文字；图片、文件、@ 和已读请使用团队群聊或加入的群聊。把群邀请发给同事也可以让他在完整群聊里找到你。</div>`,
+    actions: [
+      { label: '复制群邀请', onClick: () => { closeModal(); copyGroupInvite(); } },
+      { label: '刷新发现', primary: true, onClick: async () => {
+        closeModal();
+        await refreshPeers().catch(() => {});
+        toast('已刷新局域网同事列表', 'success');
+      } },
+      { label: '关闭', onClick: closeModal },
+    ],
+  });
+}
+
+function localFileUrl(filePath) {
+  const normalized = String(filePath || '').replaceAll(String.fromCharCode(92), '/').replace(/^\/+/, '');
+  return encodeURI(`file:///${normalized}`);
+}
+function dmBubbleHtml(m) {
+  let content;
+  if (m.kind === 'image' && m.path) {
+    content = `<img class="dm-image" src="${localFileUrl(m.path)}" alt="${esc(m.name || '图片')}" loading="lazy">`;
+  } else if (m.kind === 'file' && m.path) {
+    content = `<button class="dm-file-card" type="button" data-action="dm-open-file" data-path="${esc(m.path)}"><span class="dm-file-ico">${icon('file', 16)}</span><span><b>${esc(m.name || '文件')}</b><small>${formatBytes(Number(m.size) || 0)}</small></span></button>`;
+  } else {
+    content = `<div>${esc(m.text || '')}</div>`;
+  }
+  return `<div class="dm-row ${m.direction === 'out' ? 'out' : ''}"><div class="dm-bubble">${content}<span>${new Date(m.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span></div></div>`;
+}
 function renderMessages(opts = {}) {
   const oldInput = document.getElementById('dmInput');
   const hadFocus = !!oldInput && document.activeElement === oldInput;
   const draft = oldInput && !opts.reset ? oldInput.value : '';
   const selStart = oldInput && !opts.reset ? oldInput.selectionStart : null;
   const selEnd = oldInput && !opts.reset ? oldInput.selectionEnd : null;
-  const oldTeam = document.getElementById('teamInput');
-  const teamHadFocus = !!oldTeam && document.activeElement === oldTeam;
-  const teamDraft = oldTeam ? oldTeam.value : '';
-  const teamSelStart = oldTeam ? oldTeam.selectionStart : null;
-  const teamSelEnd = oldTeam ? oldTeam.selectionEnd : null;
   const main = document.getElementById('main');
   const peers = (state.peers || []).filter((p) => !p.self);
   const chat = state.chat || {};
   const room = chat.room || {};
   const activePeer = peers.find((p) => p.id === state.dmPeerId) || null;
+  const joined = activeJoinedGroup();
+  const isTeam = !activePeer && !joined;
+  const groupName = joined ? joined.name : (room.name || '团队群聊');
+  const groupHost = joined ? joined.host : '本机群聊';
+  const groupUrl = joined ? joined.url : (isTeam ? state.roomUrl : '');
   const msgs = activePeer ? loadDM(activePeer.id) : [];
+  if (isTeam && !state.roomUrl && !state.roomUrlLoading) {
+    state.roomUrlLoading = true;
+    window.workspace.invite().then((inv) => {
+      if (inv && inv.url) {
+        state.roomUrl = inv.url;
+        if (state.view === 'messages' && !state.dmPeerId && !state.activeGroupId) renderMessages();
+      }
+    }).catch(() => {}).finally(() => { state.roomUrlLoading = false; });
+  }
+  const total = peers.length + 1 + state.joinedGroups.length;
   main.innerHTML = `
     <div class="page-head">
-      <div class="page-title"><h1>消息</h1><p>团队群聊与同事私聊 · 局域网直连</p></div>
-      <div class="page-actions"><button class="btn" data-action="join-group">${icon('link', 14)} 加入群聊</button><button class="btn" data-action="open-team-chat">${icon('external', 14)} 打开团队群聊</button></div>
+      <div class="page-title"><h1>消息</h1><p>团队群聊、加入的群聊与同事私聊 · 局域网直连</p></div>
+      <div class="page-actions">
+        <button class="btn btn-ghost" data-action="join-group">${icon('link', 14)} 加入群聊</button>
+        <button class="btn btn-ghost" data-action="refresh-messages">${icon('refresh', 14)} 刷新</button>
+      </div>
     </div>
     <div class="messages-layout">
       <section class="panel messages-side">
-        <div class="panel-head"><div class="panel-title-row"><b>会话</b><span class="count">${peers.length + 1}</span></div></div>
+        <div class="panel-head"><div class="panel-title-row"><b>会话</b><span class="count">${total}</span></div></div>
         <div class="conversation-list">
-          <button class="conversation-item ${state.dmPeerId ? '' : 'active'}" data-action="dm-team">
+          <button class="conversation-item ${isTeam ? 'active' : ''}" data-action="dm-team">
             <span class="conv-avatar">${icon('chat', 15)}</span>
-            <span class="conv-main"><b>${esc(room.name || '团队群聊')}</b><span>${chat.last ? esc(chat.last.author ? chat.last.author + '：' : '') + esc(chat.last.text || '') : '扫码/手机端加入的团队群聊'}</span></span>
+            <span class="conv-main"><b>${esc(room.name || '团队群聊')}</b><span>${chat.last ? esc(chat.last.author ? chat.last.author + '：' : '') + esc(chat.last.text || '') : '本机群聊 · 图片/文件/成员完整'}</span></span>
             ${chat.unread ? `<span class="nav-badge warn">${chat.unread}</span>` : ''}
           </button>
-          <div class="device-group-title"><span>同事私聊</span><span class="line"></span></div>
+
+          <div class="device-group-title"><span>加入的群聊</span><span class="line"></span><button class="conv-add" type="button" data-action="join-group">+ 加入</button></div>
+          ${state.joinedGroups.length ? state.joinedGroups.map((g) => `
+            <div class="conversation-item ${state.activeGroupId === g.id ? 'active' : ''}" data-action="open-group" data-group-id="${g.id}" role="button" tabindex="0">
+              <span class="conv-avatar">${icon('chat', 15)}</span>
+              <span class="conv-main"><b>${esc(g.name || '加入的群聊')}</b><span>${esc(g.host || '')} · 完整群聊</span></span>
+              <button class="conv-remove" type="button" data-action="remove-group" data-group-id="${g.id}" title="移除群聊" aria-label="移除群聊">${icon('x', 11)}</button>
+            </div>`).join('') : `<div class="conv-empty">粘贴群主邀请链接即可加入；可以同时加入多个群。</div>`}
+
+          <div class="device-group-title"><span>同事私聊</span><span class="line"></span><button class="conv-add" type="button" data-action="add-colleague">+ 添加</button></div>
           ${peers.length ? peers.map((p) => `
             <button class="conversation-item ${state.dmPeerId === p.id ? 'active' : ''}" data-action="dm-peer" data-peer-id="${p.id}">
               <span class="conv-avatar">${icon('user', 15)}</span>
               <span class="conv-main"><b>${esc(p.name)}</b><span>${esc(p.ip)} · ${p.online ? '在线' : '离线'}</span></span>
-            </button>`).join('') : `<div class="card-note" style="padding:12px">同一 Wi-Fi 下打开近传的同事会出现在这里。私聊只在局域网内传输。</div>`}
+            </button>`).join('') : `<div class="conv-empty">同事打开近传并保持同一 Wi-Fi 后，会自动出现在这里。</div>`}
         </div>
       </section>
-      <section class="panel messages-main">
+
+      <section class="panel messages-main ${activePeer ? 'dm-main' : 'group-main'}">
         ${activePeer ? `
-          <div class="conversation-head"><div><b>${esc(activePeer.name)}</b><span>${esc(activePeer.ip)} · 局域网私聊 · 按设备</span></div><button class="btn btn-sm" data-action="dm-back">返回团队群聊</button></div>
+          <div class="conversation-head">
+            <div><b>${esc(activePeer.name)}</b><span>${esc(activePeer.ip)} · 局域网私聊 · 按设备</span></div>
+            <div style="display:flex;gap:6px"><button class="btn btn-sm btn-ghost" data-action="copy-invite">邀请进群</button><button class="btn btn-sm btn-ghost" data-action="dm-back">返回团队群聊</button></div>
+          </div>
           <div class="conversation-body" id="dmBody">
-            ${msgs.length ? msgs.map((m) => `<div class="dm-row ${m.direction === 'out' ? 'out' : ''}"><div class="dm-bubble"><div>${esc(m.text)}</div><span>${new Date(m.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span></div></div>`).join('') : `<div class="empty-state"><div class="empty-ico">${icon('chat', 22)}</div><b>开始和 ${esc(activePeer.name)} 私聊</b><p>消息只通过局域网 UDP 直连，不经过云端；不保存到团队群聊。</p></div>`}
+            ${msgs.length ? msgs.map(dmBubbleHtml).join('') : `<div class="empty-state"><div class="empty-ico">${icon('chat', 22)}</div><b>开始和 ${esc(activePeer.name)} 私聊</b><p>文字、图片和文件走局域网 UDP 直连；@、已读和完整成员请使用群聊。</p></div>`}
           </div>
-          <div class="conversation-composer"><input id="dmInput" class="input" placeholder="发消息给 ${esc(activePeer.name)}…" autocomplete="off"><button class="btn btn-primary" data-action="dm-send" data-peer-id="${activePeer.id}">发送</button></div>
+          <div class="conversation-composer"><button class="icon-btn dm-attach" type="button" data-action="dm-attach" data-peer-id="${activePeer.id}" title="发送图片或文件">${icon('paperclip', 16)}</button><input id="dmInput" class="input" placeholder="发消息给 ${esc(activePeer.name)}…" autocomplete="off"><button class="btn btn-primary" data-action="dm-send" data-peer-id="${activePeer.id}">发送</button></div>
+        ` : groupUrl ? `
+          <div class="chat-embed-wrap">
+            <webview class="chat-embed" src="${esc(groupUrl)}" webpreferences="contextIsolation=yes,sandbox=yes,nodeIntegration=no"></webview>
+          </div>
         ` : `
-          <div class="conversation-head"><div><b>${esc(room.name || '团队群聊')}</b><span>${(chat.members || []).filter((m) => m.online).length || 1} 人在线 · 团队群聊</span></div><div style="display:flex;gap:6px"><button class="btn btn-sm" data-action="copy-invite">${icon('link', 13)} 邀请</button><button class="btn btn-sm" data-action="open-team-chat">${icon('external', 13)} 完整群聊</button></div></div>
-          <div class="conversation-body team-feed" id="teamBody">
-            ${(chat.recent || []).length
-              ? (chat.recent || []).map((m) => `<div class="dm-row ${m.mine ? 'out' : ''}"><div class="dm-bubble"><div>${esc(m.text)}</div><span>${esc(m.mine ? '我' : m.author)} · ${new Date(m.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span></div></div>`).join('')
-              : `<div class="empty-state"><div class="empty-ico">${icon('chat', 22)}</div><b>团队群聊已就绪</b><p>这里显示最近消息；完整成员、图片、文件和已读记录请在「完整群聊」里查看。</p></div>`}
+          <div class="chat-embed-empty">
+            <div class="empty-ico">${icon('chat', 24)}</div>
+            <b>${esc(groupName)} 正在启动</b>
+            <p>群聊服务启动后会在这里加载完整聊天；也可以先打开独立群聊窗口。</p>
+            <div style="display:flex;gap:8px"><button class="btn btn-primary" data-action="refresh-messages">刷新</button><button class="btn btn-ghost" data-action="open-team-chat">独立窗口</button></div>
           </div>
-          <div class="conversation-composer"><input id="teamInput" class="input" placeholder="发消息到 ${esc(room.name || '团队群聊')}…" autocomplete="off"><button class="btn btn-primary" data-action="team-send">发送</button></div>
         `}
       </section>
     </div>`;
   hydrateIcons(main);
+  const embed = main.querySelector('webview.chat-embed');
+  if (embed) embed.addEventListener('did-fail-load', () => toast('群聊加载失败，请确认群主电脑在线并重新加入', 'danger'));
   const input = document.getElementById('dmInput');
   if (input) {
     input.addEventListener('keydown', (e) => {
@@ -1193,23 +1305,6 @@ function renderMessages(opts = {}) {
   }
   const body = document.getElementById('dmBody');
   if (body) body.scrollTop = body.scrollHeight;
-  const teamBody = document.getElementById('teamBody');
-  if (teamBody) teamBody.scrollTop = teamBody.scrollHeight;
-  const teamInput = document.getElementById('teamInput');
-  if (teamInput) {
-    teamInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTeamMessage(); }
-    });
-    if (teamDraft) teamInput.value = teamDraft;
-    if (teamHadFocus) {
-      teamInput.focus();
-      try {
-        const pos = teamSelStart == null ? teamInput.value.length : Math.min(teamSelStart, teamInput.value.length);
-        const end = teamSelEnd == null ? pos : Math.min(teamSelEnd, teamInput.value.length);
-        teamInput.setSelectionRange(pos, Math.max(pos, end));
-      } catch {}
-    }
-  }
 }
 async function sendTeamMessage() {
   const input = document.getElementById('teamInput');
@@ -1227,6 +1322,7 @@ async function copyGroupInvite() {
   try {
     const inv = await window.workspace.invite();
     if (inv && inv.url) {
+      state.roomUrl = inv.url;
       copyText(inv.url, '邀请链接已复制，发给另一台电脑即可加入');
       return;
     }
@@ -1234,6 +1330,17 @@ async function copyGroupInvite() {
   } catch {
     toast('复制失败，请稍后重试', 'danger');
   }
+}
+async function sendDMFile(peerId) {
+  const peer = (state.peers || []).find((p) => p.id === peerId);
+  if (!peer || !peer.online) { toast('同事不在线', 'warn'); return; }
+  toast('正在发送，等待对方确认…', 'info');
+  const res = await window.workspace.remote.sendDMFile(peerId).catch(() => null);
+  if (!res) { toast('已取消发送', 'info'); return; }
+  if (res.error) { toast(res.error, 'danger'); return; }
+  pushDM(peerId, res);
+  if (state.view === 'messages' && state.dmPeerId === peerId) renderMessages({ reset: true });
+  toast(res.kind === 'image' ? '图片已发送' : '文件已发送', 'success');
 }
 async function sendDM(peerId) {
   const input = document.getElementById('dmInput');
@@ -1428,6 +1535,7 @@ function renderDiagnostics() {
     { name: '版本', status: 'ok', detail: `本机 ${d.version || state.remote?.device?.version || '—'} · V1 不远程推送更新` },
   ];
   const summary = !helper ? '需修复输入组件' : peers > 1 ? '可连接' : '等待设备';
+  const score = helper ? 92 : 58;
   const conclusion = peers > 1
     ? '已发现可连接设备。建议保持两台电脑在同一 5GHz Wi-Fi；2K 需要更高带宽。'
     : '尚未发现其他设备。请确认对方已打开近传并开启「本机被控」，两台电脑在同一 Wi-Fi，AP 未开启客户端隔离。';
@@ -1455,7 +1563,10 @@ function renderDiagnostics() {
         <div class="card">
           <div class="card-head"><b>结论</b><span class="tag ${helper ? 'ok' : 'red'}">${summary}</span></div>
           <div class="diag-score">
-            <div class="diag-ring" style="background:conic-gradient(${helper ? 'var(--green)' : 'var(--amber)'} 0 ${helper ? 92 : 58}%, var(--surface-muted) ${helper ? 92 : 58}% 100%)"><b>${helper ? '92' : '58'}</b></div>
+            <div class="diag-meter ${helper ? 'ok' : 'warn'}">
+              <div class="diag-meter-head"><b>${score}</b><span>/ 100</span></div>
+              <div class="diag-meter-bar"><i style="width:${score}%"></i></div>
+            </div>
             <span>${esc(conclusion)}</span>
           </div>
           <div class="diag-conclusion" style="background:var(--surface-subtle);border-color:var(--line)"><b>无 Hub 提示：</b> 近传只检查本机与已发现设备，不做全公司 20 路负载监控。AP 隔离需要 IT 在网络设备上关闭。</div>
@@ -2123,6 +2234,7 @@ function openSession(deviceId) {
   if (device.status === 'session' && device.sessionHolder) { openBusyModal(device); return; }
   closeMenu(); closeCommand(); closeModal(); closeDrawer();
   state.agent = false; renderAgent();
+  state.chromeVisible = false;
   state.session = {
     deviceId,
     locked: device.status === 'locked',
@@ -2139,6 +2251,7 @@ function openSession(deviceId) {
     passwordError: '',
     duration: 0,
     drawer: null,
+    pinned: false,
     startAt: Date.now(),
   };
   clearInterval(state.sessionTimer);
@@ -2171,6 +2284,7 @@ async function openRealSession(device) {
   if (!code && !remembered) return;
   closeMenu(); closeCommand(); closeModal(); closeDrawer();
   state.agent = false; renderAgent();
+  state.chromeVisible = false;
   state.lastFrame = null;
   state.frameRect = null;
   state.session = {
@@ -2194,6 +2308,7 @@ async function openRealSession(device) {
     passwordError: '',
     duration: 0,
     drawer: null,
+    pinned: false,
     startAt: Date.now(),
   };
   clearInterval(state.sessionTimer);
@@ -2323,8 +2438,10 @@ function renderSession() {
   const grantLabel = grantMinutes === null ? '' : grantMinutes >= 60 ? `${Math.ceil(grantMinutes / 60)} 小时` : `${grantMinutes} 分钟`;
   const qualityShort = s.quality === '4k' ? '4K' : s.quality === '2k' ? '2K' : s.quality === '1080' ? '1080p' : s.quality === '720' ? '720p' : '自动';
   const captureLabel = `${s.capture === 'gdi' ? 'GDI' : 'JPEG'} · ${s.captureWidth ? `${s.captureWidth}×${s.captureHeight}` : 'JPEG'}`;
+  const autoHide = (!s.pinned || state.windowFullscreen) && !s.drawer;
   root.innerHTML = `
-    <div class="session-shell${state.windowFullscreen ? ' fullscreen' : ''}${state.windowFullscreen && state.chromeVisible ? ' chrome-visible' : ''}">
+    <div class="session-shell${state.windowFullscreen ? ' fullscreen' : ''}${autoHide ? ' auto-hide' : ''}${autoHide && state.chromeVisible ? ' chrome-visible' : ''}">
+      <div class="session-handle" aria-hidden="true"></div>
       <div class="session-top">
         <div class="session-device">
           <span class="s-ico">${icon(locked ? 'lock' : 'monitor', 13)}</span>
@@ -2345,6 +2462,7 @@ function renderSession() {
           <button class="session-btn" data-session-action="quality-menu" title="画质：${esc(s.qualityLabel)}">${icon('activity', 14)} <span>${qualityShort}</span></button>
           <button class="session-btn ${s.clipboard ? 'active' : ''}" data-session-action="clipboard" title="发送剪贴板">${icon('clipboard', 14)}</button>
           <button class="session-btn" data-session-action="files" title="文件传输 · 也可直接拖入窗口">${icon('folder', 14)}</button>
+          <button class="session-btn ${s.pinned ? 'active' : ''}" data-session-action="pin" title="${s.pinned ? '取消固定工具条' : '固定工具条'}">${icon('pin', 14)}</button>
           <button class="session-btn ${state.windowFullscreen ? 'active' : ''}" data-session-action="fullscreen" title="${state.windowFullscreen ? '退出全屏' : '全屏'}">${icon(state.windowFullscreen ? 'compress' : 'expand', 14)}</button>
           <button class="session-btn" data-session-action="more" title="更多">${icon('more', 14)}</button>
           <button class="session-btn danger" data-session-action="disconnect" title="断开">${icon('power', 14)} <span>断开</span></button>
@@ -2358,10 +2476,14 @@ function renderSession() {
         ${locked ? unlockPanelHtml(device, s) : ''}
         <div class="session-drop" id="sessionDrop" hidden><div class="session-drop-box">${icon('upload', 26)}<b>松开即可发送到远端</b><span>文件保存到对方的「下载/NearSend」</span></div></div>
         ${s.drawer ? sessionDrawerHtml(device, s) : ''}
-        <div class="session-hint">${s.real ? '拖入文件直接发送 · Ctrl+Alt+Shift+F 全屏 · Ctrl+Alt+Shift+E 结束会话' : '键盘已捕获 · Ctrl+Alt+Shift+K 释放 · 右键发送到远端'}</div>
+        <div class="session-hint">${s.real ? '拖入文件发送 · 工具条贴顶浮出，可点图钉固定 · F11 全屏' : '工具条贴顶浮出，可点图钉固定 · 拖入文件发送'}</div>
       </div>
     </div>`;
   hydrateIcons(root);
+  if (!s.hintShown && autoHide) {
+    s.hintShown = true;
+    setTimeout(() => toast('工具条已自动隐藏 · 鼠标移到屏幕最顶部显示，点图钉可固定', 'info'), 350);
+  }
   if (s.drawer === 'files') bindDropzone();
   if (s.real) {
     requestAnimationFrame(() => {
@@ -2545,6 +2667,13 @@ async function sessionAction(action, el) {
   if (!s) return;
   const device = deviceById(s.deviceId);
   if (!device) return;
+  if (action === 'pin') {
+    s.pinned = !s.pinned;
+    state.chromeVisible = true;
+    renderSession();
+    toast(s.pinned ? '工具条已固定' : '工具条已取消固定，鼠标移到顶部显示', 'info');
+    return;
+  }
   if (action === 'fullscreen') {
     const on = await window.workspace.window('fullscreen').catch(() => false);
     state.windowFullscreen = !!on;
@@ -3307,14 +3436,25 @@ function bindSession() {
     window.workspace.remote.dragFile(row.dataset.filePath);
   });
   bindSessionDrop();
-  // 全屏时默认隐藏上下工具条；鼠标贴近屏幕上/下边缘再浮出
+  // 工具条默认自动隐藏（可固定）；鼠标贴近屏幕顶部再浮出，避免遮挡远端顶部按钮
   root.addEventListener('pointermove', (e) => {
-    if (!state.windowFullscreen || state.menuEl) return;
+    const s = state.session;
+    if (!s || state.menuEl) return;
+    const autoHide = (!s.pinned || state.windowFullscreen) && !s.drawer;
+    if (!autoHide) return;
     const shell = root.querySelector('.session-shell');
     if (!shell) return;
-    const show = e.clientY <= 56;
-    state.chromeVisible = show;
-    shell.classList.toggle('chrome-visible', show);
+    if (!state.chromeVisible) {
+      if (e.clientY <= 8) {
+        state.chromeVisible = true;
+        shell.classList.add('chrome-visible');
+      }
+      return;
+    }
+    if (e.clientY > 64) {
+      state.chromeVisible = false;
+      shell.classList.remove('chrome-visible');
+    }
   }, { passive: true });
   root.addEventListener('pointerleave', () => {
     state.chromeVisible = false;
@@ -3476,17 +3616,35 @@ function handleMainClick(e) {
     else if (a === 'open-agent') toggleAgent(true);
     else if (a === 'open-team-chat') window.workspace.openChat();
     else if (a === 'join-group') openJoinGroupModal();
-    else if (a === 'dm-team') { state.dmPeerId = null; renderMessages({ reset: true }); }
+    else if (a === 'add-colleague') openAddColleagueModal();
+    else if (a === 'refresh-messages') renderMessages({ reset: true });
+    else if (a === 'dm-team') { state.dmPeerId = null; state.activeGroupId = null; renderMessages({ reset: true }); }
+    else if (a === 'open-group') {
+      state.activeGroupId = act.dataset.groupId || null;
+      state.dmPeerId = null;
+      renderMessages({ reset: true });
+    }
+    else if (a === 'remove-group') {
+      const gid = act.dataset.groupId;
+      state.joinedGroups = state.joinedGroups.filter((g) => g.id !== gid);
+      saveJoinedGroups();
+      if (state.activeGroupId === gid) state.activeGroupId = null;
+      renderMessages({ reset: true });
+      toast('已移除群聊，可重新粘贴邀请链接加入', 'info');
+    }
     else if (a === 'dm-peer') {
       state.dmPeerId = act.dataset.peerId;
+      state.activeGroupId = null;
       state.incomingUnread = 0;
       refreshUnreadBadge();
       renderMessages({ focus: true, reset: true });
     }
-    else if (a === 'dm-back') { state.dmPeerId = null; renderMessages({ reset: true }); }
+    else if (a === 'dm-back') { state.dmPeerId = null; state.activeGroupId = null; renderMessages({ reset: true }); }
     else if (a === 'team-send') sendTeamMessage();
     else if (a === 'copy-invite') copyGroupInvite();
     else if (a === 'dm-send') sendDM(act.dataset.peerId);
+    else if (a === 'dm-attach') sendDMFile(act.dataset.peerId);
+    else if (a === 'dm-open-file') window.workspace.openPath(act.dataset.path);
     else return;
     return;
   }
