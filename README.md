@@ -1,5 +1,7 @@
 # 近传 · NearSend
 
+> 产品介绍页：https://oldfoollearnc.github.io/landrop/ · 发布页：https://github.com/Oldfoollearnc/landrop/releases/tag/v3.0.0
+
 **同一个 Wi-Fi 下，多台手机和电脑扫码加入一个局域网群聊。** 不登录、不上云、不压缩，也不经过任何中转服务器。
 
 > **3.0 新增：近传 · 远程工位。** Windows 控制端可以直接连回自己的工位电脑：局域网发现、6 位码配对、真实屏幕与键鼠、剪贴板、文件发送、本机被控、同事私聊；原有群聊完整保留。运行 `npm start` 打开统一工作台；群聊从左侧「消息」进入。
