@@ -84,7 +84,11 @@ public class Discovery {
                     MainThread.run(new Runnable() {
                         @Override
                         public void run() {
-                            listener.onDone(found);
+                            List<ApiClient.Found> snapshot;
+                            synchronized (found) {
+                                snapshot = new ArrayList<>(found);
+                            }
+                            listener.onDone(snapshot);
                         }
                     });
                 }
@@ -142,7 +146,11 @@ public class Discovery {
         MainThread.run(new Runnable() {
             @Override
             public void run() {
-                listener.onDone(new ArrayList<>(found));
+                List<ApiClient.Found> snapshot;
+                synchronized (found) {
+                    snapshot = new ArrayList<>(found);
+                }
+                listener.onDone(snapshot);
             }
         });
     }
@@ -152,10 +160,12 @@ public class Discovery {
         if (cancelled) return false;
         ApiClient.Found f = ApiClient.probe(ip, port);
         if (f == null) return false;
-        for (ApiClient.Found old : found) {
-            if (old.ip.equals(f.ip) && old.port == f.port) return true;
+        synchronized (found) {
+            for (ApiClient.Found old : found) {
+                if (old.ip.equals(f.ip) && old.port == f.port) return true;
+            }
+            found.add(f);
         }
-        found.add(f);
         MainThread.run(new Runnable() {
             @Override
             public void run() {

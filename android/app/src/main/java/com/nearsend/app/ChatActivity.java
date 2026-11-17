@@ -85,8 +85,6 @@ public class ChatActivity extends AppCompatActivity {
         App.chatVisible = true;
         App.chatDeviceId = device.id;
         DeviceStore.get().touch(device.id);
-
-        LinkService.ensure(this, device.id);
     }
 
     boolean isNightTheme() {
@@ -231,6 +229,18 @@ public class ChatActivity extends AppCompatActivity {
                 if (u == null) return false;
                 String scheme = u.getScheme() == null ? "" : u.getScheme().toLowerCase();
                 if (scheme.startsWith("http")) {
+                    // 只允许留在已配对电脑的源里；跳转到其他站点一律交给外部浏览器，
+                    // 否则外部页面会继续持有 NearSend JS 桥（剪贴板/下载/设置）。
+                    boolean sameHost = u.getHost() != null && device.ip != null
+                            && u.getHost().equalsIgnoreCase(device.ip)
+                            && u.getPort() == device.port;
+                    if (!sameHost) {
+                        try {
+                            startActivity(new Intent(Intent.ACTION_VIEW, u));
+                        } catch (Exception ignored) {
+                        }
+                        return true;
+                    }
                     String path = u.getPath();
                     if (path != null && path.startsWith("/d/")) {
                         Downloader.save(ChatActivity.this, device,
@@ -290,7 +300,7 @@ public class ChatActivity extends AppCompatActivity {
                 pendingCallback = cb;
                 try {
                     if (params.isCaptureEnabled() && hasCamera()) {
-                        return takePhoto();
+                        if (takePhoto()) return true;
                     }
                     Intent i = new Intent(Intent.ACTION_GET_CONTENT);
                     i.addCategory(Intent.CATEGORY_OPENABLE);
@@ -320,7 +330,10 @@ public class ChatActivity extends AppCompatActivity {
                 Uri u = Uri.parse(url);
                 String name = u.getQueryParameter("name");
                 String path = u.getPath();
-                if (path != null && path.startsWith("/d/")) {
+                boolean sameHost = u.getHost() != null && device.ip != null
+                        && u.getHost().equalsIgnoreCase(device.ip)
+                        && u.getPort() == device.port;
+                if (sameHost && path != null && path.startsWith("/d/")) {
                     Downloader.save(ChatActivity.this, device, idFromPath(path), name,
                             new Downloader.Callback() {
                                 @Override

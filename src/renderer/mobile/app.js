@@ -10,7 +10,7 @@
   const chat = $('chat');
   const input = $('input');
   const sendBtn = $('send');
-  const CHUNK = 4 * 1024 * 1024;
+  const CHUNK = 8 * 1024 * 1024;
   const MAX_TEXT = 20000;
   const RECALL_MS = 2 * 60 * 1000;
 
@@ -66,10 +66,19 @@
     native = null;
   }
 
-  let myId = localStorage.getItem('nsDid') || '';
+  let myId = '';
+  try {
+    myId = localStorage.getItem('nsDid') || '';
+  } catch {
+    /* 隐私模式/禁用存储时仍然可以聊天，只是刷新后 cid 前缀会变 */
+  }
   if (!myId) {
     myId = Math.random().toString(16).slice(2, 10).padEnd(8, '0');
-    localStorage.setItem('nsDid', myId);
+    try {
+      localStorage.setItem('nsDid', myId);
+    } catch {
+      /* ignore */
+    }
   }
   let seq = 0;
   // 每次启动换一个随机片段。只用递增 seq 的话，刷新页面后第一条消息的 cid
@@ -244,7 +253,11 @@
     return `${dayLabel(ts)} ${clock(ts)}`;
   }
 
-  const isLocal = (m) => !!m && (String(m.id).startsWith('local:') || (m.src && state.pending.has(m.src)));
+  const isLocal = (m) => !!m && (
+    String(m.id).startsWith('local:')
+    // 其他成员的 src 不可信：服务端会把 src 广播给所有人，必须同时核对 uid
+    || (m.src && state.pending.has(m.src) && (!m.uid || !state.me || m.uid === state.me.id))
+  );
 
   function isMine(m) {
     if (!m) return false;
@@ -535,6 +548,12 @@
     return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+  function isNameChar(ch) {
+    if (!ch) return false;
+    // 只把字母/数字/下划线当作昵称延续字符；中文标点不应阻止 @ 匹配
+    return /[A-Za-z0-9_\u00c0-\u024f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/.test(ch);
+  }
+
   function appendMentions(container, text) {
     const names = state.members.map((m) => m && m.name).filter(Boolean)
       .sort((a, b) => b.length - a.length);
@@ -542,10 +561,12 @@
       container.appendChild(document.createTextNode(text));
       return;
     }
-    const re = new RegExp('@(' + names.map(escapeRe).join('|') + ')(?![\\p{L}\\p{N}_])', 'gu');
+    // 不用 \p{L}：部分未更新的 Android WebView 不支持 Unicode property escape，会让整条消息渲染失败
+    const re = new RegExp('@(' + names.map(escapeRe).join('|') + ')', 'g');
     let last = 0;
     let m;
     while ((m = re.exec(text))) {
+      if (isNameChar(text.charAt(m.index + m[0].length))) continue;
       if (m.index > last) container.appendChild(document.createTextNode(text.slice(last, m.index)));
       const span = document.createElement('span');
       span.className = 'at';
@@ -965,7 +986,7 @@
       hint.textContent = '只显示最近 500 条记录';
       chat.appendChild(hint);
     }
-    if (!list.length && !state.pending.size) {
+    if (!list.length && !state.pending.size && !state.failed.length) {
       renderEmpty();
       return;
     }
@@ -1135,9 +1156,18 @@
     }
     ws = socket;
     setStatus('连接中…', 'warn');
+    const openTimer = setTimeout(() => {
+      if (ws !== socket || socket.readyState !== 0) return;
+      try { socket.close(); } catch {}
+    }, 10000);
 
     socket.addEventListener('open', () => {
+      clearTimeout(openTimer);
       if (ws !== socket) return;
+      if (!member) {
+        try { socket.close(); } catch {}
+        return;
+      }
       state.connected = true;
       state.everConnected = true;
       retryDelay = 600;
@@ -1162,6 +1192,7 @@
     });
 
     socket.addEventListener('message', (e) => {
+      if (ws !== socket) return;
       lastInbound = Date.now();
       let p;
       try {
@@ -1173,6 +1204,7 @@
     });
 
     socket.addEventListener('close', (event) => {
+      clearTimeout(openTimer);
       if (ws !== socket) return;
       ws = null;
       state.connected = false;
@@ -1341,7 +1373,6 @@
       scheduleReconnect();
     }
     deliver(m.src);
-    scheduleReconnect();
   }
 
   function flushPending() {
@@ -1404,6 +1435,9 @@
     }
     if (p.t === 'denied') {
       state.joining = false;
+      state.connected = false;
+      clearInterval(hbTimer);
+      hbTimer = null;
       connectPaused = true;
       member = null;
       saveMember(null);
@@ -1453,10 +1487,13 @@
       const m = p.msg;
       if (!m) return;
       if (m.uid) setTyping(m.uid, (authorOf(m) || {}).name, false);
-      if (m.src && state.locals.has(m.src)) {
+      const ownSrc = !m.uid || !state.me || m.uid === state.me.id;
+      if (m.src && ownSrc && state.locals.has(m.src)) {
         const local = state.locals.get(m.src);
         removeLocalRow(local.id);
         if (local.kind === 'text') {
+          const pendingItem = state.pending.get(m.src);
+          if (pendingItem) clearTimeout(pendingItem.timer);
           state.pending.delete(m.src);
           saveQueue();
           state.locals.delete(m.src);
@@ -1483,6 +1520,7 @@
     if (p.t === 'msg:delete') {
       cancelUploadFor(p.id);
       removeRow(p.id);
+      if (state.reply && state.reply.id === p.id) clearReply();
       return;
     }
     if (p.t === 'clear') {
@@ -1495,11 +1533,20 @@
       return;
     }
     if (p.t === 'ack') {
+      // 服务端明确拒绝（空内容/身份失效）时不能悄悄删掉本地气泡，否则消息像是凭空消失
+      if (p.error && !p.id && !p.msg) {
+        failText(p.cid);
+        toast(p.error === 'no identity' ? '身份已失效，请重新加入群聊' : '消息发送失败');
+        return;
+      }
       resolveLocal(p.cid, p.msg || null);
       return;
     }
     if (p.t === 'kicked') {
       state.joined = false;
+      state.connected = false;
+      clearInterval(hbTimer);
+      hbTimer = null;
       connectPaused = true;
       member = null;
       saveMember(null);
@@ -1517,6 +1564,9 @@
     }
     if (p.t === 'left') {
       state.joined = false;
+      state.connected = false;
+      clearInterval(hbTimer);
+      hbTimer = null;
       connectPaused = true;
       member = null;
       saveMember(null);
@@ -1716,12 +1766,11 @@
     mkGroup('离线', offline);
   }
 
-  let inviteLoading = false;
+  let inviteLoading = null;
   function ensureInvite() {
     if (state.invite && state.invite.qr) return Promise.resolve(state.invite);
-    if (inviteLoading) return Promise.resolve(null);
-    inviteLoading = true;
-    return fetch('/api/room', { headers: authHeaders() })
+    if (inviteLoading) return inviteLoading;
+    inviteLoading = fetch('/api/room', { headers: authHeaders() })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data) {
@@ -1734,8 +1783,9 @@
       })
       .catch(() => null)
       .finally(() => {
-        inviteLoading = false;
+        inviteLoading = null;
       });
+    return inviteLoading;
   }
 
   function openSide() {
@@ -2025,7 +2075,8 @@
     }
     $('joinName').value = savedName || defaultName();
     try {
-      joinColor = localStorage.getItem('ns.color') || colorForName($('joinName').value);
+      const savedColor = localStorage.getItem('ns.color') || '';
+      joinColor = COLORS.includes(savedColor) ? savedColor : colorForName($('joinName').value);
     } catch {
       joinColor = colorForName($('joinName').value);
     }
@@ -2081,8 +2132,7 @@
   }
 
   function openJoinFlow(message) {
-    if (message) showJoin(message);
-    if (state.room) {
+    if (message || state.room) {
       showJoin(message);
       return;
     }
@@ -2104,7 +2154,8 @@
     if (Array.isArray(list) && list.length) {
       const done = new Set();
       for (const m of list) {
-        if (m && m.kind === 'text' && m.status === 'ok' && m.src) done.add(m.src);
+        if (m && m.kind === 'text' && m.status === 'ok' && m.src
+          && (!m.uid || !state.me || m.uid === state.me.id)) done.add(m.src);
       }
       let changed = false;
       for (const cid of [...state.pending.keys()]) {
@@ -2399,13 +2450,23 @@
         const r = await putChunk(id, file.slice(offset, end), offset, (loaded) =>
           onUploadProgress(cid, offset + loaded, file.size)
         );
-        offset = typeof r.offset === 'number' ? r.offset : end;
+        const nextOffset = typeof r.offset === 'number' ? r.offset : end;
+        if (nextOffset <= offset || nextOffset > file.size) throw new Error('上传进度异常');
+        offset = nextOffset;
         onUploadProgress(cid, offset, file.size);
       }
       if (state.cancelUploads.has(cid)) throw new Error('cancelled');
       await postJSON(`/api/upload/${id}/done`, {});
       state.cancelUploads.delete(cid);
       trackers.stop(cid);
+      // WS 断线时收不到 /done 的广播，至少把本地气泡从「上传中」收尾
+      const localNow = state.locals.get(cid);
+      const localRow = localNow && state.byId.get(localNow.id);
+      if (localRow && localRow.status !== 'ok') {
+        localRow.status = 'ok';
+        localRow.progress = 1;
+        rebuildRow(localRow);
+      }
       buzz(8);
     } catch (err) {
       trackers.stop(cid);
@@ -2646,6 +2707,8 @@
   }
 
   function cancelLocalSilent(cid) {
+    const pendingItem = state.pending.get(cid);
+    if (pendingItem) clearTimeout(pendingItem.timer);
     state.pending.delete(cid);
     saveQueue();
     const local = state.locals.get(cid);
@@ -3551,7 +3614,8 @@
         cell.appendChild(lb);
         cell.addEventListener('click', () => {
           closeSheet($('attachWrap'));
-          setTimeout(c.run, 60);
+          // 必须保持在用户手势的同一个任务里触发 input.click()，否则 iOS/部分 WebView 会拦截文件选择器
+          c.run();
         });
         grid.appendChild(cell);
       }
@@ -3844,7 +3908,8 @@
   };
 
   window.__nsBack = function () {
-    if (!$('join').hidden) return true;
+    // 入群页没有其他返回入口，系统返回键应直接退出聊天页
+    if (!$('join').hidden) return false;
     if (mentionState.open) {
       closeMention();
       return true;

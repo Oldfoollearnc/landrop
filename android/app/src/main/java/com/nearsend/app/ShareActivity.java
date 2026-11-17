@@ -81,14 +81,15 @@ public class ShareActivity extends AppCompatActivity {
         String action = intent.getAction();
         if (Intent.ACTION_SEND.equals(action)) {
             String type = intent.getType() == null ? "" : intent.getType();
+            CharSequence t = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+            if (t != null) text = t.toString();
             Uri stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
             if (stream != null && !type.startsWith("text/")) {
                 addUri(stream, type);
-            } else {
-                CharSequence t = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
-                text = t == null ? "" : t.toString();
             }
         } else if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            CharSequence t = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+            if (t != null) text = t.toString();
             ArrayList<Uri> uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
             String type = intent.getType() == null ? "" : intent.getType();
             if (uris != null) for (Uri u : uris) addUri(u, type);
@@ -306,8 +307,13 @@ public class ShareActivity extends AppCompatActivity {
             }, new Bg.Result<String>() {
                 @Override
                 public void on(String id) {
-                    if (id != null && !id.isEmpty()) finishOk();
-                    else fail();
+                    if (id != null && !id.isEmpty()) {
+                        // 分享的 Intent 可能同时带文字和图片/文件，文字发完还要继续传文件
+                        if (files.isEmpty()) finishOk();
+                        else sendNext(d, 0);
+                    } else {
+                        fail();
+                    }
                 }
             });
             return;

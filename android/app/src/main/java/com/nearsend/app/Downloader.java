@@ -383,6 +383,8 @@ public final class Downloader {
         if (n.endsWith(".gif")) return "image/gif";
         if (n.endsWith(".webp")) return "image/webp";
         if (n.endsWith(".heic")) return "image/heic";
+        if (n.endsWith(".heif")) return "image/heif";
+        if (n.endsWith(".avif")) return "image/avif";
         if (n.endsWith(".bmp")) return "image/bmp";
         if (n.endsWith(".mp4")) return "video/mp4";
         if (n.endsWith(".mov")) return "video/quicktime";

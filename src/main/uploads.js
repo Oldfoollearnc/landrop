@@ -15,7 +15,7 @@ function safeName(input) {
     .replace(/[. ]+$/, '');
   if (!n) n = 'file';
   // Windows 保留设备名看的是第一个点之前的部分：CON.txt、CON.tar.gz 都不合法
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(n.split('.')[0])) n = '_' + n;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])\s*(\..*)?$/i.test(n)) n = '_' + n;
   if (n.length > 140) {
     const ext = path.extname(n).slice(0, 16);
     n = n.slice(0, 140 - ext.length) + ext;
@@ -73,10 +73,11 @@ class Uploads extends EventEmitter {
     await fsp.mkdir(dir, { recursive: true });
     const tmpPath = path.join(dir, id + '.part');
     const fd = await fsp.open(tmpPath, 'w');
+    const requested = Number(size);
     const session = {
       id,
       name: safeName(name),
-      size: Number(size) || 0,
+      size: Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : 0,
       mime: mime || 'application/octet-stream',
       tmpPath,
       fd,

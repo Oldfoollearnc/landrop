@@ -194,14 +194,6 @@ public class SettingsActivity extends AppCompatActivity {
 
         // 数据
         Group data = group(R.string.set_group_data);
-        data.add(actionRow(getString(R.string.set_clear_remote),
-                getString(R.string.set_clear_remote_note), new Runnable() {
-                    @Override
-                    public void run() {
-                        confirmClearRemote();
-                    }
-                }));
-        data.add(divider());
         data.add(actionRow(getString(R.string.set_forget_all),
                 getString(R.string.set_forget_all_note), new Runnable() {
                     @Override
@@ -558,6 +550,9 @@ public class SettingsActivity extends AppCompatActivity {
                 public void run() {
                     Prefs.setDefaultDeviceId(d.id);
                     DeviceStore.get().setBackgroundDeviceId(d.id);
+                    if (Prefs.backgroundReceive() && LinkService.started) {
+                        LinkService.resumeReceiving(SettingsActivity.this, d.id);
+                    }
                     rebuild();
                 }
             }));
@@ -566,34 +561,6 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     // ---------- 操作 ----------
-
-    private void confirmClearRemote() {
-        final Device d = primaryDevice();
-        if (d == null) {
-            Ui.toast(this, getString(R.string.err_no_device));
-            return;
-        }
-        Sheet.confirm(this, getString(R.string.set_clear_remote_confirm),
-                getString(R.string.set_clear_remote), new Runnable() {
-                    @Override
-                    public void run() {
-                        final Dialog2 dlg = new Dialog2();
-                        Bg.io(new java.util.concurrent.Callable<Boolean>() {
-                            @Override
-                            public Boolean call() {
-                                return ApiClient.clearHistory(d);
-                            }
-                        }, new Bg.Result<Boolean>() {
-                            @Override
-                            public void on(Boolean ok) {
-                                dlg.dismiss();
-                                Ui.toast(SettingsActivity.this, getString(Boolean.TRUE.equals(ok)
-                                        ? R.string.set_clear_remote_done : R.string.err_unreachable));
-                            }
-                        });
-                    }
-                });
-    }
 
     private void confirmForgetAll() {
         if (DeviceStore.get().isEmpty()) {
@@ -624,12 +591,6 @@ public class SettingsActivity extends AppCompatActivity {
             dlg.getWindow().setBackgroundDrawable(new android.graphics.drawable.InsetDrawable(
                     Ui.round(this, Ui.color(this, R.color.surface), 20), Ui.dp(this, 24)));
         }
-    }
-
-    private Device primaryDevice() {
-        String id = DeviceStore.get().backgroundDeviceId();
-        Device d = id.isEmpty() ? null : DeviceStore.get().byId(id);
-        return d != null ? d : DeviceStore.get().primary();
     }
 
     // ---------- 小工具 ----------
@@ -671,41 +632,5 @@ public class SettingsActivity extends AppCompatActivity {
         View v = new View(this);
         v.setLayoutParams(new LinearLayout.LayoutParams(1, Ui.dp(this, dp)));
         return v;
-    }
-
-    /** 轻量「处理中」遮罩，避免为一次网络请求引入 ProgressDialog */
-    private class Dialog2 {
-        private final android.app.Dialog d;
-
-        Dialog2() {
-            d = new android.app.Dialog(SettingsActivity.this);
-            d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
-            LinearLayout box = new LinearLayout(SettingsActivity.this);
-            box.setBackground(Ui.round(SettingsActivity.this,
-                    Ui.color(SettingsActivity.this, R.color.surface), 16));
-            int p = Ui.dp(SettingsActivity.this, 20);
-            box.setPadding(p, p, p, p);
-            box.addView(Ui.text(SettingsActivity.this, getString(R.string.set_clearing),
-                    14, Ui.color(SettingsActivity.this, R.color.ink2)));
-            d.setContentView(box);
-            if (d.getWindow() != null) {
-                d.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0));
-                d.getWindow().setLayout(Ui.dp(SettingsActivity.this, 200),
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-                d.getWindow().setGravity(Gravity.CENTER);
-                d.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-                android.view.WindowManager.LayoutParams lp = d.getWindow().getAttributes();
-                lp.dimAmount = 0.4f;
-                d.getWindow().setAttributes(lp);
-            }
-            d.show();
-        }
-
-        void dismiss() {
-            try {
-                d.dismiss();
-            } catch (Exception ignored) {
-            }
-        }
     }
 }

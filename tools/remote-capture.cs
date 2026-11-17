@@ -62,7 +62,7 @@ class CaptureProgram
         int interval = Math.Max(10, 1000 / targetFps);
         if (bounds.Width <= 0 || bounds.Height <= 0) return;
 
-        double scale = Math.Min(targetW / (double)bounds.Width, targetH / (double)bounds.Height);
+        double scale = Math.Min(1.0, Math.Min(targetW / (double)bounds.Width, targetH / (double)bounds.Height));
         int outW = Math.Max(2, (int)Math.Round(bounds.Width * scale));
         int outH = Math.Max(2, (int)Math.Round(bounds.Height * scale));
 
@@ -94,7 +94,7 @@ class CaptureProgram
                 {
                     sourceGraphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size, CopyPixelOperation.SourceCopy);
                     outputGraphics.DrawImage(source, 0, 0, outW, outH);
-                    DrawCursor(outputGraphics, bounds, scale);
+                    // 不再把远端鼠标画进画面：控制端用本地光标覆盖层，避免一快一慢两个鼠标
 
                     stream.SetLength(0);
                     output.Save(stream, jpeg, encParams);

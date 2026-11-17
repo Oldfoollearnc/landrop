@@ -14,7 +14,7 @@
     "icon": "node tools/gen-icon.js",
     "icon:android": "node tools/gen-android-icon.js",
     "build:input": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-remote-input.ps1",
-    "test": "node tools/test-server.js",
+    "test": "node tools/test-server.js && node tools/test-remote.js",
     "test:e2e": "node tools/e2e-mobile.js",
     "predist": "npm run build:input",
     "predist:setup": "npm run build:input",

@@ -730,6 +730,11 @@ public class MainActivity extends AppCompatActivity {
                     DeviceStore.get().setBackgroundDeviceId(d.id);
                     Ui.toast(MainActivity.this, getString(R.string.default_set, d.displayName()));
                 }
+                if (Prefs.backgroundReceive() && LinkService.started) {
+                    String next = DeviceStore.get().backgroundDeviceId();
+                    if (next.isEmpty()) LinkService.stop(MainActivity.this);
+                    else LinkService.resumeReceiving(MainActivity.this, next);
+                }
                 render();
             }
         }));
@@ -760,6 +765,14 @@ public class MainActivity extends AppCompatActivity {
                                 if (DeviceStore.get().isEmpty()) {
                                     Prefs.setDefaultDeviceId("");
                                     LinkService.stop(MainActivity.this);
+                                } else if (LinkService.started) {
+                                    // 删掉的如果正是后台连接的那台，要切到新的默认设备
+                                    if (!Prefs.backgroundReceive()) {
+                                        LinkService.stop(MainActivity.this);
+                                    } else {
+                                        LinkService.resumeReceiving(MainActivity.this,
+                                                DeviceStore.get().backgroundDeviceId());
+                                    }
                                 }
                                 render();
                             }

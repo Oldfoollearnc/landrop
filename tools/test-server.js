@@ -166,14 +166,33 @@ function request(port, method, urlPath, body, headers) {
   check('浏览器无成员身份不能借令牌匿名发消息', r.code === 401, 'code=' + r.code);
 
   console.log('引用与清空');
+  const replySource = core.publish({
+    from: 'pc', kind: 'text', text: '原消息',
+    author: { id: 'host', name: '我的电脑', color: 'sky', kind: 'desktop' },
+  });
   r = await request(port, 'POST', '/api/send/text' + T, {
     text: 'reply test',
     cid: 'cid-2',
-    reply: { id: 'a100000000000001', from: 'pc', kind: 'text', text: '原消息', evil: '<script>' },
+    reply: {
+      id: replySource.id, from: 'pc', kind: 'text', text: '伪造文本',
+      author: { id: 'fake', name: '黑客', color: 'rose', kind: 'desktop' }, evil: '<script>',
+    },
   });
   const replied = core.history().find((m) => m.src === 'cid-2');
-  check('引用字段被保留并裁剪', !!replied && !!replied.reply && replied.reply.text === '原消息');
+  check('引用内容以服务端原文为准', !!replied && !!replied.reply
+    && replied.reply.text === '原消息', replied && replied.reply && replied.reply.text);
+  check('引用作者以服务端原文为准', replied && replied.reply && replied.reply.author
+    && replied.reply.author.name === '我的电脑', replied && replied.reply && replied.reply.author);
   check('引用里的多余字段被丢弃', replied && replied.reply && replied.reply.evil === undefined);
+
+  r = await request(port, 'POST', '/api/send/text' + T, {
+    text: 'fake reply',
+    cid: 'cid-3',
+    reply: { id: 'a100000000000001', from: 'pc', kind: 'text', text: '群主说过的话' },
+  });
+  const fakeReply = core.history().find((m) => m.src === 'cid-3');
+  check('不存在的消息不能伪造引用', !!fakeReply && fakeReply.reply === undefined,
+    fakeReply && JSON.stringify(fakeReply.reply));
 
   r = await request(port, 'POST', '/api/clear' + T, {});
   check('远程清空被拒绝（群历史只能由群主操作）', r.code === 403, 'code=' + r.code);
@@ -347,6 +366,31 @@ function request(port, method, urlPath, body, headers) {
   check('成员可以改自己的昵称', !!(inbox.find((m) => m.t === 'me' && m.me.name === '测试手机二号')));
   check('改名后成员列表同步', room.roster(new Set([memberId])).some((m) => m.name === '测试手机二号'));
 
+  console.log('上传归属');
+  r = await request(port, 'POST', '/api/upload/init' + T, {
+    name: 'owner-check.txt', size: 8, mime: 'text/plain',
+  }, MH);
+  const ownedUploadId = r.json && r.json.id;
+  check('成员可以创建自己的上传', r.code === 200 && !!ownedUploadId, JSON.stringify(r.json));
+  r = await request(port, 'PUT', '/api/upload/' + ownedUploadId + '?off=0&t=testtoken', { chunk: 'abcd' }, MH);
+  check('上传者可以写自己的分片', r.code === 200, 'code=' + r.code);
+  r = await request(port, 'GET', '/api/upload/' + ownedUploadId + T, null, MH);
+  check('上传者可以查询自己的上传进度（假实现返回 404）', r.code === 404, 'code=' + r.code);
+  r = await request(port, 'PUT', '/api/upload/' + ownedUploadId + '?off=0&t=testtoken', { chunk: 'evil' });
+  check('旧兼容身份不能写别人的上传', r.code === 403, 'code=' + r.code);
+  const other = room.join({ name: '另一个成员', kind: 'phone' });
+  const OH = { 'x-ns-member': other.member.id, 'x-ns-key': other.key };
+  r = await request(port, 'PUT', '/api/upload/' + ownedUploadId + '?off=0&t=testtoken', { chunk: 'evil' }, OH);
+  check('其他成员不能写别人的上传分片', r.code === 403, 'code=' + r.code);
+  r = await request(port, 'GET', '/api/upload/' + ownedUploadId + T, null, OH);
+  check('其他成员不能查看别人的上传进度', r.code === 403, 'code=' + r.code);
+  r = await request(port, 'POST', '/api/upload/' + ownedUploadId + '/done' + T, {}, OH);
+  check('其他成员不能替别人完成上传', r.code === 403, 'code=' + r.code);
+  r = await request(port, 'DELETE', '/api/msg/' + ownedUploadId + T, null, MH);
+  check('上传者可以删除自己的上传消息', r.code === 200 && aborts.includes(ownedUploadId),
+    'code=' + r.code + ' aborts=' + aborts.join(','));
+  room.leave(other.member.id);
+
   ws.close();
 
   console.log('移出与恢复');
@@ -395,6 +439,12 @@ function request(port, method, urlPath, body, headers) {
       && fs.readFileSync(fc.path, 'utf8') === 'CC'
       && fs.readFileSync(fd.path, 'utf8') === 'dd',
     fc.path + ' / ' + fd.path);
+
+  const reserved = await up.init({ name: 'CON.txt', size: 2, mime: 'text/plain' });
+  await up.write(reserved.id, 0, Buffer.from('ok'));
+  const fr = await up.finish(reserved.id);
+  check('Windows 保留设备名会被重命名', path.basename(fr.path).startsWith('_CON'),
+    fr.path);
   fs.rmSync(upDir, { recursive: true, force: true });
 
   console.log('加密记录被临时锁定后的恢复');
@@ -444,6 +494,32 @@ function request(port, method, urlPath, body, headers) {
   check('清空记录后不会复活更旧的 locked 文件', st2.messages().length === 0,
     'count=' + st2.messages().length);
   fs.rmSync(clearedDir, { recursive: true, force: true });
+
+  console.log('损坏的聊天记录行');
+  const corruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nearsend-corrupt-'));
+  const corruptFile = path.join(corruptDir, 'messages.jsonl');
+  fs.writeFileSync(corruptFile, [
+    'null',
+    '{broken json',
+    '{"op":"add","msg":null}',
+    '{"op":"add","msg":{"id":"good0001","ts":1,"from":"pc","kind":"text","text":"x","status":"ok"}}',
+    '{"op":"patch","id":"good0001","patch":{"text":"y"}}',
+    '123',
+    '',
+  ].join('\n'));
+  let corruptStore = null;
+  let corruptErr = null;
+  try {
+    corruptStore = new Store(corruptFile, null).load();
+  } catch (err) {
+    corruptErr = err;
+  }
+  check('损坏行不会让启动崩溃', !corruptErr, corruptErr && corruptErr.message);
+  check('损坏行之后的有效消息仍能读取',
+    !!corruptStore && corruptStore.messages().length === 1
+      && corruptStore.messages()[0].text === 'y',
+    corruptStore ? JSON.stringify(corruptStore.messages()) : 'no store');
+  fs.rmSync(corruptDir, { recursive: true, force: true });
 
   console.log('群主设置');
   server.setRoomName('验收群');

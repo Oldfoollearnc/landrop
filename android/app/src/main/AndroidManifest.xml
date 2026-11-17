@@ -69,7 +69,6 @@
             android:name=".ShareActivity"
             android:exported="true"
             android:excludeFromRecents="true"
-            android:launchMode="singleTop"
             android:theme="@style/ShareTheme"
             android:windowSoftInputMode="stateAlwaysHidden">
             <intent-filter>

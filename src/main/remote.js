@@ -20,16 +20,30 @@ const { spawn } = require('child_process');
 const APP_TAG = 'nearsend-remote';
 const UDP_PORT = 47822;
 const WS_START = 47820;
-const FRAME_MS = 120;
 
 function now() { return Date.now(); }
 function rid(prefix) { return `${prefix}_${crypto.randomBytes(6).toString('hex')}`; }
 function safeFileName(name) {
-  const base = path.basename(String(name || 'file')).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 160) || 'file';
+  let base = path.basename(String(name || 'file'))
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+    .replace(/[. ]+$/, '')
+    .slice(0, 160) || 'file';
+  // Windows 保留设备名：CON.txt、NUL、COM1 等会被当成设备而不是普通文件
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])\s*(\..*)?$/i.test(base)) base = '_' + base;
   return base;
 }
-function six() { return String(Math.floor(100000 + Math.random() * 900000)); }
+function six() { return String(crypto.randomInt(100000, 1000000)); }
 function safeName(s, fallback) { return String(s || '').replace(/\s+/g, ' ').trim().slice(0, 80) || fallback; }
+/** 文件发送背压：缓冲降到低水位就立刻续读，不按固定时间硬等，尽量跑满局域网带宽 */
+function resumeWhenDrained(stream, ws) {
+  const check = () => {
+    if (stream.destroyed) return;
+    if (ws.readyState !== WebSocket.OPEN) { stream.destroy(); return; }
+    if (ws.bufferedAmount > 2 * 1024 * 1024) { setTimeout(check, 15); return; }
+    stream.resume();
+  };
+  setTimeout(check, 15);
+}
 function ipv4List() {
   const out = [];
   const nics = os.networkInterfaces();
@@ -91,6 +105,8 @@ class RemoteManager extends EventEmitter {
     this.history = [];
     this.clipboardText = '';
     this.incomingFiles = new Map();
+    this.incomingPaths = new Set();
+    this.outgoingFiles = new Map();
     this.save();
   }
 
@@ -106,7 +122,9 @@ class RemoteManager extends EventEmitter {
   saveAudit() {
     try {
       fs.mkdirSync(path.dirname(this.auditFile), { recursive: true });
-      fs.writeFileSync(this.auditFile, JSON.stringify(this.audit.slice(0, 500), null, 2));
+      const tmp = `${this.auditFile}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(this.audit.slice(0, 500), null, 2));
+      fs.renameSync(tmp, this.auditFile);
     } catch (err) { console.error('[remote] save audit', err.message); }
   }
   saveAuditSoon() {
@@ -119,7 +137,8 @@ class RemoteManager extends EventEmitter {
   save() {
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
-      fs.writeFileSync(this.file, JSON.stringify({
+      const tmp = `${this.file}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({
         deviceId: this.deviceId,
         controllerId: this.controllerId,
         deviceName: this.deviceName,
@@ -128,6 +147,7 @@ class RemoteManager extends EventEmitter {
         grants: this.grants,
         knownPeers: this.knownPeers,
       }, null, 2));
+      fs.renameSync(tmp, this.file);
     } catch (err) { console.error('[remote] save', err.message); }
   }
   resolveHelper() {
@@ -147,7 +167,6 @@ class RemoteManager extends EventEmitter {
     this.startUdp();
     this.startDm();
     this.loadKnownPeers();
-    this.addSelfPeer();
     if (this.agentEnabled && process.env.NEARSEND_SELF_PREVIEW !== '0') {
       // 本机预览：不依赖 UDP 回环，直接把 127.0.0.1 作为一台设备显示。
       this.addSelfPeer(true);
@@ -161,10 +180,30 @@ class RemoteManager extends EventEmitter {
       try {
         await new Promise((resolve, reject) => {
           const wss = new WebSocketServer({ port: p, host: '0.0.0.0' });
-          wss.once('listening', () => { this.wss = wss; this.wsPort = p; resolve(); });
-          wss.once('error', (err) => { try { wss.close(); } catch {} reject(err); });
+          const onListening = () => {
+            wss.removeListener('error', onError);
+            resolve();
+          };
+          const onError = (err) => {
+            wss.removeListener('listening', onListening);
+            try { wss.close(); } catch {}
+            reject(err);
+          };
+          wss.once('listening', onListening);
+          wss.once('error', onError);
+          this.wss = wss;
         });
-        this.wss.on('connection', (ws, req) => this.onConnection(ws, req));
+        this.wss.on('connection', (ws, req) => {
+          try {
+            this.onConnection(ws, req);
+          } catch (err) {
+            console.error('[remote] connection failed', err.message);
+            try { ws.close(1011, 'internal error'); } catch {}
+          }
+        });
+        // 监听成功后的错误不能没有监听器，否则 EventEmitter 会直接抛出
+        this.wss.on('error', (err) => console.error('[remote] ws server', err.message));
+        this.wsPort = p;
         console.log('[remote] ws', this.wsPort);
         return;
       } catch { /* try next */ }
@@ -182,6 +221,7 @@ class RemoteManager extends EventEmitter {
           if (!msg || msg.ns !== APP_TAG) return;
           if (msg.t === 'query' && this.agentEnabled) this.announce(rinfo.address);
           if (msg.t === 'announce' && msg.id && msg.id !== this.deviceId) {
+            if (typeof msg.id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(msg.id)) return;
             const peer = {
               id: msg.id, name: safeName(msg.name, msg.id), ip: rinfo.address, port: Number(msg.port) || 0,
               os: msg.os || 'Windows', version: msg.version || '', online: true, lastSeen: now(), self: false,
@@ -189,9 +229,15 @@ class RemoteManager extends EventEmitter {
               displays: Array.isArray(msg.displays) ? msg.displays.slice(0, 2) : undefined,
             };
             if (!peer.port) return;
+            const prev = this.peers.get(peer.id);
+            const changed = !prev || !prev.online || prev.name !== peer.name
+              || prev.ip !== peer.ip || prev.port !== peer.port
+              || prev.version !== peer.version
+              || prev.displayCount !== peer.displayCount;
             this.peers.set(peer.id, peer);
             this.rememberPeer(peer);
-            this.emit('peers', this.peerList());
+            // announce 每 2.5 秒一次；只在真正变化时通知界面，避免输入框被反复重绘
+            if (changed) this.emit('peers', this.peerList());
           }
         } catch { /* ignore malformed */ }
       });
@@ -251,6 +297,7 @@ class RemoteManager extends EventEmitter {
   loadKnownPeers() {
     for (const p of Object.values(this.knownPeers || {})) {
       if (!p || !p.id || p.id === this.deviceId) continue;
+      if (typeof p.id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(p.id)) continue;
       if (this.peers.has(p.id)) continue;
       this.peers.set(p.id, {
         id: p.id, name: safeName(p.name, p.id), ip: p.ip || '', port: Number(p.port) || 0,
@@ -271,6 +318,7 @@ class RemoteManager extends EventEmitter {
   }
 
   rememberPeer(peer) {
+    const old = this.knownPeers[peer.id];
     this.knownPeers[peer.id] = {
       id: peer.id, name: peer.name, ip: peer.ip, port: peer.port,
       os: peer.os, version: peer.version, lastSeen: peer.lastSeen,
@@ -278,29 +326,47 @@ class RemoteManager extends EventEmitter {
       displays: peer.displays || undefined,
       manual: !!peer.manual,
     };
-    this.saveKnownSoon();
+    // UDP 每 2.5 秒就 announce 一次；只在地址/名称等真正变化时落盘，避免每 4 秒重写 remote.json
+    const changed = !old
+      || old.name !== peer.name
+      || old.ip !== peer.ip
+      || old.port !== peer.port
+      || old.version !== peer.version
+      || old.displayCount !== (peer.displayCount || 1)
+      || old.manual !== !!peer.manual;
+    // lastSeen 每分钟最多落盘一次，重启后离线时间不会永远停在第一次发现时
+    const staleSeen = !old || !old.lastSeen || peer.lastSeen - old.lastSeen > 60000;
+    if (changed || staleSeen) this.saveKnownSoon();
   }
 
   addSelfPeer(force) {
     if (!this.agentEnabled && force) return;
     if (!this.agentEnabled) return;
+    let displays = [];
+    let primaryId = null;
+    try {
+      displays = screen.getAllDisplays();
+      primaryId = screen.getPrimaryDisplay().id;
+    } catch {}
     this.peers.set(this.deviceId, {
       id: this.deviceId, name: `${this.deviceName}（本机）`, ip: '127.0.0.1', port: this.wsPort,
       os: `Windows · ${os.release()}`, version: this.version, online: true, lastSeen: now(), self: true,
-      displayCount: screen.getAllDisplays().length,
-      displays: screen.getAllDisplays().map((d, i) => ({ index: i, res: `${d.size.width}×${d.size.height}`, primary: d.id === screen.getPrimaryDisplay().id })),
+      displayCount: displays.length,
+      displays: displays.map((d, i) => ({ index: i, res: `${d.size.width}×${d.size.height}`, primary: d.id === primaryId })),
     });
   }
 
   announce(to) {
     if (!this.udp || !this.agentEnabled) return;
-    const msg = Buffer.from(JSON.stringify({
-      ns: APP_TAG, t: 'announce', id: this.deviceId, name: this.deviceName, port: this.wsPort,
-      os: `Windows · ${os.release()}`, version: this.version, displayCount: screen.getAllDisplays().length,
-      displays: screen.getAllDisplays().map((d, i) => ({ index: i, res: `${d.size.width}×${d.size.height}`, primary: d.id === screen.getPrimaryDisplay().id })),
-      ts: now(),
-    }));
     try {
+      const displays = screen.getAllDisplays();
+      const primaryId = screen.getPrimaryDisplay().id;
+      const msg = Buffer.from(JSON.stringify({
+        ns: APP_TAG, t: 'announce', id: this.deviceId, name: this.deviceName, port: this.wsPort,
+        os: `Windows · ${os.release()}`, version: this.version, displayCount: displays.length,
+        displays: displays.map((d, i) => ({ index: i, res: `${d.size.width}×${d.size.height}`, primary: d.id === primaryId })),
+        ts: now(),
+      }));
       if (to) this.udp.send(msg, UDP_PORT, to);
       else {
         for (const a of ipv4List()) {
@@ -309,7 +375,9 @@ class RemoteManager extends EventEmitter {
         }
         this.udp.send(msg, UDP_PORT, '255.255.255.255');
       }
-    } catch { /* broadcast may fail on some adapters */ }
+    } catch (err) {
+      console.error('[remote] announce', err.message);
+    }
   }
 
   peerList() {
@@ -321,6 +389,12 @@ class RemoteManager extends EventEmitter {
   }
 
   state() {
+    let displays = [];
+    let primaryId = null;
+    try {
+      displays = screen.getAllDisplays();
+      primaryId = screen.getPrimaryDisplay().id;
+    } catch {}
     const active = this.active && this.active.ws && this.active.ws.readyState === WebSocket.OPEN
       ? {
         peerName: this.active.peerName || '控制端',
@@ -338,8 +412,8 @@ class RemoteManager extends EventEmitter {
       device: {
         id: this.deviceId, name: this.deviceName, host: os.hostname(),
         os: `Windows · ${os.release()}`, version: this.version, ips: ipv4List(),
-        displays: screen.getAllDisplays().map((d, i) => ({
-          index: i, label: `屏幕 ${i + 1}`, res: `${d.size.width}×${d.size.height}`, primary: d.id === screen.getPrimaryDisplay().id,
+        displays: displays.map((d, i) => ({
+          index: i, label: `屏幕 ${i + 1}`, res: `${d.size.width}×${d.size.height}`, primary: d.id === primaryId,
         })),
       },
       agentEnabled: this.agentEnabled,
@@ -419,9 +493,12 @@ class RemoteManager extends EventEmitter {
     return true;
   }
 
-  revokeGrant(controllerId) {    const id = String(controllerId || '');
-    if (!id) return false;
+  revokeGrant(controllerId) {
+    const id = String(controllerId || '');
+    if (!id || !/^[A-Za-z0-9_-]{1,80}$/.test(id)
+      || id === '__proto__' || id === 'prototype' || id === 'constructor') return false;
     const revoked = this.grants[id];
+    if (!revoked && !this.allowed.has(id)) return false;
     delete this.grants[id];
     this.allowed.delete(id);
     this.save();
@@ -438,17 +515,38 @@ class RemoteManager extends EventEmitter {
 
   // ---------- agent side ----------
   onConnection(ws, req) {
+    // 浏览器页面发起的 WebSocket 一定带 Origin；正常控制端由主进程 ws 客户端发起，不带 Origin。
+    // 拒绝网页来源，避免任意网站借 localhost 端口做跨站 WebSocket 劫持。
+    if (req.headers.origin) {
+      try { ws.close(4003, 'origin not allowed'); } catch {}
+      return;
+    }
     const conn = { ws, ip: req.socket.remoteAddress, controller: null, paired: false, alive: true };
+    try { ws._socket?.setNoDelay(true); } catch {}
     this.connections.add(conn);
     ws.on('pong', () => { conn.alive = true; });
     ws.on('message', (raw) => {
+      try {
       let msg;
       try { msg = JSON.parse(raw.toString('utf8')); } catch { return; }
       if (!msg || typeof msg !== 'object') return;
       if (msg.t === 'pair') return this.pairController(conn, msg);
+      if (msg.t === 'ping') { this.send(ws, { t: 'pong', ts: msg.ts || now() }); return; }
+      // 未配对连接只能握手和心跳：不能注入键鼠、改剪贴板、结束会话或发文件。
+      if (!conn.paired) return;
+      // 只有当前会话所属的连接才能操作会话。其他已配对连接只能通过 start 发起接管。
+      const active = this.active && this.active.ws === ws ? this.active : null;
       if (msg.t === 'start') return this.startActive(conn, msg);
-      if (msg.t === 'input') return this.handleInput(msg);
+      if (msg.t === 'input') {
+        if (!active) return;
+        if (active.permissions && active.permissions.control === false) {
+          this.send(conn.ws, { t: 'error', code: 'CONTROL_DENIED', message: '当前授权未开启键鼠控制' });
+          return;
+        }
+        return this.handleInput(msg);
+      }
       if (msg.t === 'clipboard') {
+        if (!active) return;
         if (conn.permissions && conn.permissions.clipboard === false) {
           this.send(conn.ws, { t: 'error', code: 'CLIPBOARD_DENIED', message: '当前授权未开启剪贴板' });
           return;
@@ -461,24 +559,64 @@ class RemoteManager extends EventEmitter {
         return;
       }
       if (msg.t === 'recording') {
+        if (!active) return;
         if (conn.permissions && conn.permissions.record === false) {
           this.send(conn.ws, { t: 'error', code: 'RECORDING_DENIED', message: '当前授权未开启录制' });
           return;
         }
-        if (this.active) this.active.recording = !!msg.on;
+        active.recording = !!msg.on;
         this.emit('state', this.state());
         return;
       }
       if (msg.t === 'file-begin') {
+        if (!active) {
+          this.send(conn.ws, { t: 'file-error', id: String(msg.id || ''), message: '当前没有远程会话' });
+          return;
+        }
         if (conn.permissions && conn.permissions.file === false) {
-          this.send(conn.ws, { t: 'error', code: 'FILE_DENIED', message: '当前授权未开启文件传输' });
+          this.send(conn.ws, { t: 'file-error', id: String(msg.id || ''), message: '当前授权未开启文件传输' });
           return;
         }
         return this.receiveFileBegin(conn, msg);
       }
-      if (msg.t === 'file-chunk') return this.receiveFileChunk(conn, msg);
-      if (msg.t === 'file-end') return this.receiveFileEnd(conn, msg);
+      if (msg.t === 'file-chunk') {
+        if (!active) return;
+        return this.receiveFileChunk(conn, msg);
+      }
+      if (msg.t === 'file-end') {
+        if (!active) return;
+        return this.receiveFileEnd(conn, msg);
+      }
+      if (msg.t === 'file-error') {
+        const incoming = this.incomingFiles.get(String(msg.id || ''));
+        if (incoming && incoming.ws === ws) {
+          this.abortIncoming(incoming, String(msg.message || '对方取消了传输'), false);
+        } else {
+          this.cancelOutgoing(String(msg.id || ''), false, ws);
+        }
+        return;
+      }
+      if (msg.t === 'fs-get') {
+        if (!active) return;
+        if (conn.permissions && conn.permissions.file === false) {
+          this.send(conn.ws, { t: 'fs-error', message: '当前授权未开启文件传输' });
+          return;
+        }
+        const remotePath = String(msg.path || '');
+        try {
+          if (!remotePath || !path.isAbsolute(remotePath) || !fs.statSync(remotePath).isFile()) {
+            this.send(conn.ws, { t: 'fs-error', message: '远端文件不存在或不是文件' });
+            return;
+          }
+        } catch {
+          this.send(conn.ws, { t: 'fs-error', message: '无法读取远端文件' });
+          return;
+        }
+        this.sendFileToActive(remotePath);
+        return;
+      }
       if (msg.t === 'chat') {
+        if (!active) return;
         const text = String(msg.text || '').trim().slice(0, 4000);
         if (!text) return;
         const evt = { from: conn.controller?.name || '同事', fromId: conn.controller?.id || '', text, ts: now(), direction: 'in' };
@@ -487,8 +625,13 @@ class RemoteManager extends EventEmitter {
         this.send(conn.ws, { t: 'chat:ack', ts: evt.ts });
         return;
       }
-      if (msg.t === 'stop') { this.stopActive('remote-stop'); return; }
-      if (msg.t === 'ping') this.send(ws, { t: 'pong', ts: msg.ts || now() });
+      if (msg.t === 'stop') {
+        if (!active) return;
+        this.stopActive('remote-stop');
+      }
+      } catch (err) {
+        console.error('[remote] message failed', err.message);
+      }
     });
     ws.on('close', () => {
       this.connections.delete(conn);
@@ -506,13 +649,18 @@ class RemoteManager extends EventEmitter {
       return;
     }
     const controller = msg.controller || {};
-    const id = String(controller.id || '').slice(0, 80);
+    let id = String(controller.id || '').slice(0, 80);
+    if (id && (!/^[A-Za-z0-9_-]+$/.test(id) || id === '__proto__' || id === 'prototype' || id === 'constructor')) {
+      this.send(conn.ws, { t: 'error', code: 'PAIR_DENIED', message: '控制端身份无效' });
+      return;
+    }
     const name = safeName(controller.name, '同事的控制端');
     const code = String(msg.code || '').replace(/\D/g, '');
     const role = msg.role === 'admin' ? 'admin' : 'owner';
     let grant = id ? this.grants[id] : null;
     if (grant && grant.expiresAt && grant.expiresAt < now()) {
       delete this.grants[id];
+      this.allowed.delete(id);
       grant = null;
     }
     const allowed = !!(id && this.allowed.has(id) && grant);
@@ -552,13 +700,17 @@ class RemoteManager extends EventEmitter {
       this.send(conn.ws, { t: 'error', code: 'GRANT_EXPIRED', message: '授权已到期' });
       return;
     }
+    const sameConn = !!(this.active && this.active.ws === conn.ws);
     const replacing = !!(this.active && this.active.ws !== conn.ws);
-    this.stopActive(replacing ? 'takeover' : 'switch', replacing);
+    const startedAt = sameConn ? this.active.startedAt : now();
+    const prevSessionId = sameConn ? this.active.sessionId : null;
+    // 同一连接切换画质/屏幕不是新会话：安静地重启采集，不写结束/开始审计，也不弹通知
+    this.stopActive(sameConn ? 'switch' : (replacing ? 'takeover' : 'switch'), replacing, sameConn);
     const display = Math.max(0, Math.min(1, Number(msg.display) || 0));
-    const quality = ['auto', '2k', '1080', '720'].includes(msg.quality) ? msg.quality : 'auto';
+    const quality = ['auto', '4k', '2k', '1080', '720'].includes(msg.quality) ? msg.quality : 'auto';
     this.active = {
       ws: conn.ws, conn, controller: conn.controller, peerName: conn.controller?.name,
-      display, quality, startedAt: now(), timer: null,
+      display, quality, startedAt, sessionId: prevSessionId || rid('sess'), timer: null,
       role: conn.grant.role, permissions: conn.grant.permissions, expiresAt: conn.grant.expiresAt,
     };
     this.lastAgentWs = conn.ws;
@@ -570,9 +722,20 @@ class RemoteManager extends EventEmitter {
       quality,
       grant: { role: conn.grant.role, permissions: conn.grant.permissions, expiresAt: conn.grant.expiresAt },
     });
-    this.pushAudit('session_start', conn.controller?.name || '控制端', '成功', `display=${display} quality=${quality}`);
-    this.history.unshift({ id: rid('sess'), peer: conn.controller?.name || '控制端', startedAt: this.active.startedAt, display, quality, result: 'active' });
-    if (this.history.length > 100) this.history.length = 100;
+    if (!sameConn) {
+      this.pushAudit('session_start', conn.controller?.name || '控制端', '成功', `display=${display} quality=${quality}`);
+      this.history.unshift({ id: this.active.sessionId, peer: conn.controller?.name || '控制端', startedAt, display, quality, result: 'active' });
+      if (this.history.length > 100) this.history.length = 100;
+    } else {
+      const entry = this.history.find((h) => h.id === this.active.sessionId);
+      if (entry) {
+        entry.display = display;
+        entry.quality = quality;
+        entry.result = 'active';
+        entry.reason = '';
+        entry.endedAt = null;
+      }
+    }
     clearTimeout(this.grantTimer);
     if (conn.grant.expiresAt) {
       this.grantTimer = setTimeout(() => {
@@ -581,6 +744,8 @@ class RemoteManager extends EventEmitter {
       }, Math.max(0, conn.grant.expiresAt - now()));
     }
     this.emit('state', this.state());
+    this.lastFrameErrorAt = 0;
+    this.lastAgentClipboard = undefined;
     this.startCapture();
   }
 
@@ -599,15 +764,20 @@ class RemoteManager extends EventEmitter {
     }, 1200);
   }
 
+  /** 文件传输期间把画面压到约 1fps，避免 JPEG 帧把带宽和 TCP 缓冲占满 */
+  frameBudgetForFileTransfer() {
+    if (!this.incomingFiles.size && !this.outgoingFiles.size) return true;
+    const ts = now();
+    if (ts - (this.lastTransferFrame || 0) < 800) return false;
+    this.lastTransferFrame = ts;
+    return true;
+  }
+
   startCapture() {
     const active = this.active;
     if (!active) return;
     this.stopCaptureHelper();
-    const profile = active.quality === '2k'
-      ? { width: 2560, height: 1440, quality: 68, fps: 12 }
-      : active.quality === '720'
-        ? { width: 1280, height: 720, quality: 60, fps: 20 }
-        : { width: 1920, height: 1080, quality: 64, fps: 15 };
+    const profile = this.captureProfile(active.quality, active.display);
     this.startClipboardSync();
     if (fs.existsSync(this.capturePath)) {
       try {
@@ -623,6 +793,8 @@ class RemoteManager extends EventEmitter {
         let gotFrame = false;
         reader.on('line', (line) => {
           if (this.active !== active) return;
+          // 传输文件时降低画面到约 1fps，把带宽让给文件；传完自动恢复
+          if (!this.frameBudgetForFileTransfer()) return;
           if (!active.ws || active.ws.readyState !== WebSocket.OPEN) return;
           if (active.ws.bufferedAmount > 8 * 1024 * 1024) return;
           const i1 = line.indexOf(' ');
@@ -639,14 +811,14 @@ class RemoteManager extends EventEmitter {
           if (this.captureHelper === child) this.captureHelper = null;
           if (this.active === active && !gotFrame) {
             this.captureMode = 'electron';
-            this.startFrames();
+            this.startFrames(profile.fps);
           }
         });
         child.on('exit', () => {
           if (this.captureHelper === child) this.captureHelper = null;
           if (this.active === active) {
             this.captureMode = 'electron';
-            this.startFrames();
+            this.startFrames(profile.fps);
           }
         });
         this.emit('state', this.state());
@@ -656,7 +828,33 @@ class RemoteManager extends EventEmitter {
       }
     }
     this.captureMode = 'electron';
-    this.startFrames();
+    this.startFrames(profile.fps);
+  }
+
+  /**
+   * 采集档位：分辨率只降不升（避免把 1080p 放大成 2K 反而更糊），JPEG 质量优先保证文字清晰。
+   * auto 会按被控端物理分辨率自动选 1080/1440p 上限。
+   */
+  captureProfile(quality, displayIndex) {
+    const bounds = physicalBounds(displayBounds(displayIndex));
+    const preset = quality === '4k'
+      ? { width: 3840, height: 2160, quality: 86, fps: 8 }
+      : quality === '2k'
+        ? { width: 2560, height: 1440, quality: 86, fps: 12 }
+        : quality === '1080'
+          ? { width: 1920, height: 1080, quality: 86, fps: 15 }
+          : quality === '720'
+            ? { width: 1280, height: 720, quality: 82, fps: 20 }
+            : bounds.width >= 2560
+              ? { width: 2560, height: 1440, quality: 86, fps: 12 }
+              : { width: 1920, height: 1080, quality: 86, fps: 15 };
+    const scale = Math.min(1, preset.width / Math.max(1, bounds.width), preset.height / Math.max(1, bounds.height));
+    return {
+      width: Math.max(2, Math.round(bounds.width * scale)),
+      height: Math.max(2, Math.round(bounds.height * scale)),
+      quality: preset.quality,
+      fps: preset.fps,
+    };
   }
 
   stopCaptureHelper() {
@@ -670,10 +868,11 @@ class RemoteManager extends EventEmitter {
     }
   }
 
-  startFrames() {
+  startFrames(fps) {
     this.stopCaptureHelper();
     clearInterval(this.frameTimer);
-    this.frameTimer = setInterval(() => this.captureOnce(), FRAME_MS);
+    const interval = Math.max(50, Math.round(1000 / (Number(fps) || 12)));
+    this.frameTimer = setInterval(() => this.captureOnce(), interval);
     if (!this.clipboardTimer) this.startClipboardSync();
     this.captureOnce();
   }
@@ -686,14 +885,14 @@ class RemoteManager extends EventEmitter {
       return;
     }
     if (!active.ws || active.ws.readyState !== WebSocket.OPEN) { this.stopActive('ws-closed'); return; }
+    if (!this.frameBudgetForFileTransfer()) return;
     this.captureBusy = true;
     try {
-      const size = active.quality === '2k'
-        ? { width: 2560, height: 1440 }
-        : active.quality === '720'
-          ? { width: 1280, height: 720 }
-          : { width: 1920, height: 1080 };
-      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size });
+      const profile = this.captureProfile(active.quality, active.display);
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: profile.width, height: profile.height },
+      });
       if (!sources.length) throw new Error('no screen source');
       if (this.active !== active) return;
       const targetDisplay = displayBounds(active.display);
@@ -701,19 +900,27 @@ class RemoteManager extends EventEmitter {
         || sources[Math.min(active.display, sources.length - 1)];
       const img = src.thumbnail;
       const sz = img.getSize();
-      const jpeg = img.toJPEG(active.quality === '2k' ? 72 : 66);
+      const jpeg = img.toJPEG(profile.quality);
       const frame = {
         t: 'frame', ts: now(), display: active.display,
         width: sz.width, height: sz.height, data: jpeg.toString('base64'),
         capture: this.captureMode || 'electron',
       };
+      // 弱网时 ws 缓冲会无限长；GDI 采集路径已有同样保护
+      if (active.ws.bufferedAmount > 8 * 1024 * 1024) return;
       this.send(active.ws, frame);
+      this.lastFrameErrorAt = 0;
     } catch (err) {
-      this.send(active.ws, { t: 'error', code: 'FRAME_ERROR', message: err.message });
+      // 安全桌面/UAC 会持续失败；每帧报错会把控制端刷爆，最多 5 秒提示一次
+      const ts = now();
+      if (!this.lastFrameErrorAt || ts - this.lastFrameErrorAt > 5000) {
+        this.lastFrameErrorAt = ts;
+        this.send(active.ws, { t: 'error', code: 'FRAME_ERROR', message: err.message });
+      }
     } finally { this.captureBusy = false; }
   }
 
-  stopActive(reason, notify = true) {
+  stopActive(reason, notify = true, quiet = false) {
     clearInterval(this.frameTimer);
     clearInterval(this.clipboardTimer);
     clearTimeout(this.grantTimer);
@@ -723,13 +930,27 @@ class RemoteManager extends EventEmitter {
     this.clipboardTimer = null;
     this.grantTimer = null;
     if (this.active) {
+      const activeWs = this.active.ws;
+      // 会话结束后不再有人收后续分片；半截文件和发送流都要收掉
+      for (const f of [...this.incomingFiles.values()]) {
+        if (f.ws === activeWs) this.abortIncoming(f, '会话已结束', true);
+      }
+      for (const out of [...this.outgoingFiles.values()]) {
+        if (out.ws === activeWs) this.cancelFile(out.id);
+      }
       const name = this.active.controller?.name || '控制端';
-      this.pushAudit('session_end', name, '成功', reason || '');
+      const entry = this.history.find((h) => h.id === this.active.sessionId);
+      if (entry) {
+        entry.result = reason === 'takeover' ? 'takeover' : 'ended';
+        entry.reason = reason || '';
+        entry.endedAt = now();
+      }
+      if (!quiet) this.pushAudit('session_end', name, '成功', reason || '');
       if (notify) this.send(this.active.ws, { t: 'ended', reason: reason || 'ended' });
       this.lastAgentWs = null;
       this.active = null;
     }
-    this.emit('state', this.state());
+    if (!quiet) this.emit('state', this.state());
   }
 
   handleInput(msg) {
@@ -764,9 +985,13 @@ class RemoteManager extends EventEmitter {
   ensureHelper() {
     if (this.helper && !this.helper.killed && this.helper.stdin && !this.helper.stdin.destroyed) return this.helper;
     if (!fs.existsSync(this.helperPath)) {
-      console.error('[remote] input helper missing', this.helperPath);
+      if (!this.helperMissingLogged) {
+        this.helperMissingLogged = true;
+        console.error('[remote] input helper missing', this.helperPath);
+      }
       return null;
     }
+    this.helperMissingLogged = false;
     try {
       this.helper = spawn(this.helperPath, [], { windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
       this.helper.on('exit', () => { this.helper = null; });
@@ -800,10 +1025,16 @@ class RemoteManager extends EventEmitter {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
+        // 连接超时/配对失败时残留的 client 会让界面永远停在「连接中」
+        if (this.client && this.client.ws === ws) this.client = null;
         this.emit('session', { state: 'error', message: err.message || String(err), peer });
+        try { ws.terminate(); } catch {
+          try { ws.close(); } catch {}
+        }
         reject(err instanceof Error ? err : new Error(String(err)));
       };
       ws.on('open', () => {
+        try { ws._socket?.setNoDelay(true); } catch {}
         this.send(ws, {
           t: 'pair',
           controller: { id: this.client.controllerId, name: this.deviceName },
@@ -812,6 +1043,7 @@ class RemoteManager extends EventEmitter {
         });
       });
       ws.on('message', (raw) => {
+        try {
         let msg; try { msg = JSON.parse(raw.toString('utf8')); } catch { return; }
         if (!msg || typeof msg !== 'object') return;
         if (msg.t === 'hello') { /* wait for paired */ return; }
@@ -836,9 +1068,26 @@ class RemoteManager extends EventEmitter {
           return;
         }
         if (msg.t === 'frame') { this.emit('frame', msg); return; }
-        if (msg.t === 'file-begin') { this.receiveFileBegin({ ws, paired: true }, msg); return; }
+        if (msg.t === 'file-begin') {
+          if (this.client?.grant?.permissions?.file === false) {
+            this.send(ws, { t: 'file-error', id: String(msg.id || ''), message: '当前授权未开启文件传输' });
+            return;
+          }
+          this.receiveFileBegin({ ws, paired: true }, msg);
+          return;
+        }
         if (msg.t === 'file-chunk') { this.receiveFileChunk({ ws, paired: true }, msg); return; }
         if (msg.t === 'file-end') { this.receiveFileEnd({ ws, paired: true }, msg); return; }
+        if (msg.t === 'file-error') {
+          const incoming = this.incomingFiles.get(String(msg.id || ''));
+          if (incoming) this.abortIncoming(incoming, String(msg.message || '对方取消了传输'), false);
+          else this.cancelOutgoing(String(msg.id || ''), false, ws);
+          return;
+        }
+        if (msg.t === 'fs-error') {
+          this.emit('session', { state: 'error', message: msg.message || '无法从远端取回文件', peer });
+          return;
+        }
         if (msg.t === 'clipboard') { this.emit('clipboard', msg); return; }
         if (msg.t === 'chat') { this.emit('chat', { ...msg, direction: 'in', from: peer.name }); return; }
         if (msg.t === 'chat:ack') return;
@@ -847,11 +1096,25 @@ class RemoteManager extends EventEmitter {
           if (sent) this.emit('stats', { rtt: Math.max(0, now() - sent) });
           return;
         }
-        if (msg.t === 'error') { fail(new Error(msg.message || msg.code || '远程错误')); try { ws.close(); } catch {} return; }
+        if (msg.t === 'error') {
+          // 握手阶段的错误才需要断开；会话中的权限拒绝/单帧采集失败不能把整条会话踢掉
+          if (!settled) {
+            fail(new Error(msg.message || msg.code || '远程错误'));
+            try { ws.close(); } catch {}
+          } else {
+            this.emit('session', { state: 'error', message: msg.message || msg.code || '远程错误', peer });
+          }
+          return;
+        }
         if (msg.t === 'ended') {
           this.stopPing();
-          this.emit('session', { state: 'ended', reason: msg.reason || 'ended', peer });
           this.client = null;
+          this.emit('session', { state: 'ended', reason: msg.reason || 'ended', peer });
+          // client 置空后 disconnect() 就找不到这条连接了；这里主动关掉，避免会话结束后泄漏 socket
+          try { ws.close(); } catch {}
+        }
+        } catch (err) {
+          console.error('[remote] controller message failed', err.message);
         }
       });
       timer = setTimeout(() => {
@@ -860,6 +1123,12 @@ class RemoteManager extends EventEmitter {
       ws.on('close', () => {
         clearTimeout(timer);
         this.stopPing();
+        for (const f of [...this.incomingFiles.values()]) {
+          if (f.ws === ws) this.abortIncoming(f, '连接已断开', false);
+        }
+        for (const out of [...this.outgoingFiles.values()]) {
+          if (out.ws === ws) this.cancelFile(out.id);
+        }
         if (!settled) fail(new Error('连接已断开'));
         if (this.client && this.client.ws === ws) {
           this.client = null;
@@ -873,6 +1142,20 @@ class RemoteManager extends EventEmitter {
   disconnect() {
     const c = this.client;
     if (!c) return;
+    // 清理本次连接上的传输，避免残留条目一直触发「传文件时降帧」逻辑
+    for (const out of [...this.outgoingFiles.values()]) {
+      if (out.ws !== c.ws) continue;
+      out.canceled = true;
+      this.outgoingFiles.delete(out.id);
+      try { out.stream.destroy(); } catch {}
+    }
+    for (const f of [...this.incomingFiles.values()]) {
+      if (f.ws !== c.ws) continue;
+      this.incomingFiles.delete(f.id);
+      this.incomingPaths.delete(f.target);
+      try { f.stream.destroy(); } catch {}
+      try { fs.unlink(f.target, () => {}); } catch {}
+    }
     this.stopPing();
     try { this.send(c.ws, { t: 'stop' }); } catch {}
     try {
@@ -894,8 +1177,12 @@ class RemoteManager extends EventEmitter {
   receiveFileBegin(conn, msg) {
     if (!conn.paired) return;
     const id = String(msg.id || rid('file')).slice(0, 80);
+    if (this.incomingFiles.has(id)) {
+      this.send(conn.ws, { t: 'file-error', id, message: '重复的文件传输' });
+      return;
+    }
     const name = safeFileName(msg.name);
-    const size = Number(msg.size) || 0;
+    const size = Math.max(0, Math.floor(Number(msg.size) || 0));
     const dir = path.join(app.getPath('downloads'), 'NearSend');
     try { fs.mkdirSync(dir, { recursive: true }); } catch {}
     let saveName = name;
@@ -904,23 +1191,67 @@ class RemoteManager extends EventEmitter {
       const ext = path.extname(name);
       const stem = path.basename(name, ext);
       let i = 1;
-      while (fs.existsSync(target) && i < 500) {
+      while ((fs.existsSync(target) || this.incomingPaths.has(target)) && i < 500) {
         saveName = `${stem} (${i})${ext}`;
         target = path.join(dir, saveName);
         i += 1;
       }
     } catch {}
-    const stream = fs.createWriteStream(target, { flags: 'w' });
-    this.incomingFiles.set(id, { id, name: saveName, size, received: 0, target, stream });
+    this.incomingPaths.add(target);
+    const f = { id, name: saveName, size, received: 0, target, stream: null, ws: conn.ws, failed: false, actor: conn.controller?.name || '控制端' };
+    let stream;
+    try {
+      stream = fs.createWriteStream(target, { flags: 'w' });
+    } catch (err) {
+      this.incomingPaths.delete(target);
+      this.send(conn.ws, { t: 'file-error', id, message: '无法创建文件：' + err.message });
+      return;
+    }
+    f.stream = stream;
+    // 磁盘满、目录被删、权限不足都会让写入流抛 error；没有监听器会直接崩掉主进程
+    stream.on('error', (err) => {
+      console.error('[remote] file write', err.message);
+      this.abortIncoming(f, '文件写入失败：' + err.message, true);
+    });
+    this.incomingFiles.set(id, f);
     this.send(conn.ws, { t: 'file-accept', id, name: saveName });
     this.pushAudit('file_in', conn.controller?.name || '控制端', '开始', name);
     this.emit('file-progress', { id, name, size, received: 0, direction: 'in' });
   }
+  /** 中止接收：停止写入、删除半截文件；notify=true 时告知发送端 */
+  abortIncoming(f, reason, notify) {
+    if (!f || f.failed) return;
+    f.failed = true;
+    this.incomingFiles.delete(f.id);
+    this.incomingPaths.delete(f.target);
+    const cleanup = () => {
+      fs.unlink(f.target, () => {});
+    };
+    try {
+      if (f.stream.destroyed) cleanup();
+      else {
+        f.stream.once('close', cleanup);
+        f.stream.destroy();
+      }
+    } catch {
+      cleanup();
+    }
+    if (notify) this.send(f.ws, { t: 'file-error', id: f.id, message: reason });
+    this.pushAudit('file_in', f.actor || '控制端', '失败', `${f.name} · ${reason}`);
+    this.emit('file-progress', {
+      id: f.id, name: f.name, size: f.size, received: f.received,
+      done: true, error: reason, direction: 'in',
+    });
+  }
   receiveFileChunk(conn, msg) {
     const f = this.incomingFiles.get(String(msg.id || ''));
-    if (!f) return;
+    if (!f || f.ws !== conn.ws || f.failed || f.stream.destroyed) return;
     try {
       const buf = Buffer.from(String(msg.data || ''), 'base64');
+      if (f.size > 0 && f.received + buf.length > f.size) {
+        this.abortIncoming(f, '文件超出声明大小', true);
+        return;
+      }
       f.stream.write(buf);
       f.received += buf.length;
       const nowTs = now();
@@ -933,12 +1264,26 @@ class RemoteManager extends EventEmitter {
   receiveFileEnd(conn, msg) {
     const id = String(msg.id || '');
     const f = this.incomingFiles.get(id);
-    if (!f) return;
-    try { f.stream.end(); } catch {}
+    if (!f || f.ws !== conn.ws || f.failed) return;
+    if (f.size > 0 && f.received !== f.size) {
+      this.abortIncoming(f, `文件不完整 ${f.received}/${f.size}`, true);
+      return;
+    }
     this.incomingFiles.delete(id);
-    this.send(conn.ws, { t: 'file-done', id, name: f.name, size: f.received, path: f.target });
-    this.pushAudit('file_in', conn.controller?.name || '控制端', '成功', `${f.name} · ${f.received} B`);
-    this.emit('file-progress', { id: f.id, name: f.name, size: f.size, received: f.received, done: true, direction: 'in', path: f.target });
+    const done = () => {
+      this.incomingPaths.delete(f.target);
+      this.send(conn.ws, { t: 'file-done', id, name: f.name, size: f.received, path: f.target });
+      this.pushAudit('file_in', conn.controller?.name || '控制端', '成功', `${f.name} · ${f.received} B`);
+      this.emit('file-progress', { id: f.id, name: f.name, size: f.size, received: f.received, done: true, direction: 'in', path: f.target });
+    };
+    try {
+      f.stream.end(() => {
+        if (f.failed) return;
+        done();
+      });
+    } catch {
+      this.abortIncoming(f, '文件保存失败', true);
+    }
   }
 
   async sendFileToActive(filePath) {
@@ -953,11 +1298,22 @@ class RemoteManager extends EventEmitter {
     const size = st.size;
     const ws = active.ws;
     this.send(ws, { t: 'file-begin', id, name, size });
-    const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 });
+    const stream = fs.createReadStream(filePath, { highWaterMark: 256 * 1024 });
+    const out = { id, name, size, ws, stream, sent: 0, direction: 'out-agent', canceled: false };
+    this.outgoingFiles.set(id, out);
     let sent = 0;
     stream.on('data', (buf) => {
+      const current = this.outgoingFiles.get(id);
+      if (!current || current.canceled) { stream.destroy(); return; }
+      if (ws.readyState !== WebSocket.OPEN) { this.outgoingFiles.delete(id); stream.destroy(); return; }
       this.send(ws, { t: 'file-chunk', id, offset: sent, data: buf.toString('base64') });
       sent += buf.length;
+      out.sent = sent;
+      if (ws.bufferedAmount > 8 * 1024 * 1024) {
+        // 大文件直读会把整个文件堆进 ws 缓冲；超过水位就暂停读取，降到低水位立刻继续
+        stream.pause();
+        resumeWhenDrained(stream, ws);
+      }
       const ts = now();
       if (!stream.lastEmit || ts - stream.lastEmit > 300) {
         stream.lastEmit = ts;
@@ -965,8 +1321,20 @@ class RemoteManager extends EventEmitter {
       }
     });
     stream.on('end', () => {
+      if (out.canceled) return;
+      this.outgoingFiles.delete(id);
       this.send(ws, { t: 'file-end', id });
       this.emit('file-progress', { id, name, size, received: sent, done: true, direction: 'out-agent' });
+    });
+    // 发送过程中文件被移走/读取失败时，ReadStream 的 error 不监听会直接崩主进程
+    stream.on('error', (err) => {
+      this.outgoingFiles.delete(id);
+      if (out.canceled) return;
+      this.send(ws, { t: 'file-error', id, message: '读取文件失败：' + err.message });
+      this.emit('file-progress', {
+        id, name, size, received: sent, done: true, error: err.message, direction: 'out-agent',
+      });
+      this.pushAudit('file_out', this.deviceName, '失败', `${name} · ${err.message}`);
     });
     this.pushAudit('file_out', this.deviceName, '开始', name);
     return { id, name, size };
@@ -974,6 +1342,7 @@ class RemoteManager extends EventEmitter {
 
   async sendFile(filePath) {
     if (!this.client || this.client.state !== 'active') return null;
+    if (this.client.grant?.permissions?.file === false) return null;
     let st;
     try { st = fs.statSync(filePath); } catch { return null; }
     if (!st.isFile()) return null;
@@ -982,11 +1351,21 @@ class RemoteManager extends EventEmitter {
     const size = st.size;
     const ws = this.client.ws;
     this.send(ws, { t: 'file-begin', id, name, size });
-    const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 });
+    const stream = fs.createReadStream(filePath, { highWaterMark: 256 * 1024 });
+    const out = { id, name, size, ws, stream, sent: 0, direction: 'out', canceled: false };
+    this.outgoingFiles.set(id, out);
     let sent = 0;
     stream.on('data', (buf) => {
+      const current = this.outgoingFiles.get(id);
+      if (!current || current.canceled) { stream.destroy(); return; }
+      if (ws.readyState !== WebSocket.OPEN) { this.outgoingFiles.delete(id); stream.destroy(); return; }
       this.send(ws, { t: 'file-chunk', id, offset: sent, data: buf.toString('base64') });
       sent += buf.length;
+      out.sent = sent;
+      if (ws.bufferedAmount > 8 * 1024 * 1024) {
+        stream.pause();
+        resumeWhenDrained(stream, ws);
+      }
       const ts = now();
       if (!stream.lastEmit || ts - stream.lastEmit > 300) {
         stream.lastEmit = ts;
@@ -994,12 +1373,66 @@ class RemoteManager extends EventEmitter {
       }
     });
     stream.on('end', () => {
+      if (out.canceled) return;
+      this.outgoingFiles.delete(id);
       this.send(ws, { t: 'file-end', id });
       this.emit('file-progress', { id, name, size, received: sent, done: true, direction: 'out' });
     });
-    stream.on('error', (err) => this.emit('file-progress', { id, name, size, received: sent, error: err.message, direction: 'out' }));
+    stream.on('error', (err) => {
+      this.outgoingFiles.delete(id);
+      if (out.canceled) return;
+      this.send(ws, { t: 'file-error', id, message: '读取文件失败：' + err.message });
+      this.emit('file-progress', {
+        id, name, size, received: sent, done: true, error: err.message, direction: 'out',
+      });
+      this.pushAudit('file_out', this.deviceName, '失败', `${name} · ${err.message}`);
+    });
     this.pushAudit('file_out', this.deviceName, '开始', name);
     return { id, name, size };
+  }
+
+  cancelFile(id) {
+    return this.cancelOutgoing(id, true);
+  }
+
+  cancelOutgoing(id, notify, expectedWs) {
+    const key = String(id || '');
+    const out = this.outgoingFiles.get(key);
+    if (!out) return false;
+    if (expectedWs && out.ws !== expectedWs) return false;
+    out.canceled = true;
+    this.outgoingFiles.delete(key);
+    try { out.stream.destroy(); } catch {}
+    if (notify) this.send(out.ws, { t: 'file-error', id: key, message: '发送已取消' });
+    this.emit('file-progress', {
+      id: key, name: out.name, size: out.size, received: out.sent || 0,
+      done: true, error: notify ? '发送已取消' : '对方已取消接收', direction: out.direction,
+    });
+    this.pushAudit('file_out', this.deviceName, notify ? '取消' : '中断', out.name);
+    return true;
+  }
+
+  cancelIncoming(id) {
+    const key = String(id || '');
+    const f = this.incomingFiles.get(key);
+    if (!f) return false;
+    this.abortIncoming(f, '接收已取消', true);
+    return true;
+  }
+
+  /** 取消一条正在发送或接收的文件；id 是本次传输的短期 id */
+  cancelTransfer(id) {
+    const outgoing = this.cancelFile(id);
+    const incoming = this.cancelIncoming(id);
+    return outgoing || incoming;
+  }
+  requestRemoteFile(remotePath) {
+    if (!this.client || this.client.state !== 'active') return false;
+    if (this.client.grant?.permissions?.file === false) return false;
+    const value = String(remotePath || '').trim();
+    if (!value) return false;
+    this.send(this.client.ws, { t: 'fs-get', path: value });
+    return true;
   }
   setDisplay(index) {
     if (!this.client || this.client.state !== 'active') return;
@@ -1082,6 +1515,7 @@ class RemoteManager extends EventEmitter {
     clearTimeout(this.grantTimer);
     this.stopCaptureHelper();
     this.stopPing();
+    if (this.active) this.stopActive('app-quit', false);
     clearTimeout(this.knownSaveTimer);
     clearTimeout(this.auditTimer);
     this.knownSaveTimer = null;

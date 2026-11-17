@@ -144,13 +144,15 @@ class Store extends EventEmitter {
   }
 
   applyEvent(ev) {
-    if (ev.op === 'add' && ev.msg) {
+    if (!ev || typeof ev !== 'object') return;
+    if (ev.op === 'add' && ev.msg && typeof ev.msg === 'object' && typeof ev.msg.id === 'string') {
       this.list.push(ev.msg);
       this.byId.set(ev.msg.id, ev.msg);
-    } else if (ev.op === 'patch' && ev.patch) {
+    } else if (ev.op === 'patch' && ev.patch && typeof ev.patch === 'object'
+      && typeof ev.id === 'string') {
       const m = this.byId.get(ev.id);
       if (m) Object.assign(m, ev.patch);
-    } else if (ev.op === 'del') {
+    } else if (ev.op === 'del' && typeof ev.id === 'string') {
       this.dropLocal(ev.id);
     }
   }

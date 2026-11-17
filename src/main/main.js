@@ -34,6 +34,8 @@ const BG_LIGHT = '#ffffff';
 
 let win = null;
 let workspaceWin = null;
+let joinWin = null;
+let joinOrigin = '';
 let remote = null;
 let remoteActiveKey = null;
 let chatHidden = true;
@@ -145,7 +147,7 @@ const core = {
     sendWorkspace('workspace:event', { t: 'chat-summary', chat: chatSummaryPayload() });
     // 上传中的文件只通知一次，等收完（status 变 ok）再提醒，避免传一半就报「收到」
     if (input.from === 'phone' && input.kind !== 'system' && input.status !== 'uploading'
-      && win && (!win.isVisible() || !win.isFocused())) {
+      && win && !win.isDestroyed() && (!win.isVisible() || !win.isFocused())) {
       setUnread(unread + 1);
       notify(msg);
     }
@@ -158,8 +160,11 @@ const core = {
     if (!msg) return null;
     if (server) server.broadcast({ t: 'msg:update', id, patch: changes });
     send('ev', { t: 'msg:update', id, patch: changes });
+    if (persist && (changes.recalled || changes.status === 'ok' || 'name' in changes)) {
+      sendWorkspace('workspace:event', { t: 'chat-summary', chat: chatSummaryPayload() });
+    }
     if (!wasOk && changes.status === 'ok' && msg.from === 'phone' && msg.kind !== 'system'
-      && win && (!win.isVisible() || !win.isFocused())) {
+      && win && !win.isDestroyed() && (!win.isVisible() || !win.isFocused())) {
       setUnread(unread + 1);
       notify(msg);
     }
@@ -170,21 +175,29 @@ const core = {
     if (ok) {
       if (server) server.broadcast({ t: 'msg:delete', id });
       send('ev', { t: 'msg:delete', id });
+      sendWorkspace('workspace:event', { t: 'chat-summary', chat: chatSummaryPayload() });
     }
     return ok;
   },
   clear() {
     if (uploads) uploads.abortAll();
+    if (server) server.forgetAllUploads();
     store.clear(false);
     if (server) server.broadcast({ t: 'clear' });
     send('ev', { t: 'clear' });
+    sendWorkspace('workspace:event', { t: 'chat-summary', chat: chatSummaryPayload() });
     setUnread(0);
   },
   setTheme(theme) {
-    config.patch({ theme });
+    const next = theme === 'dark' ? 'dark' : 'light';
+    const changed = config.get('theme') !== next;
+    if (changed) config.patch({ theme: next });
+    workspaceTheme = next;
     applyWindowTheme();
-    if (server) server.broadcast({ t: 'theme', theme });
-    send('ev', { t: 'theme', theme });
+    if (!changed) return;
+    if (server) server.broadcast({ t: 'theme', theme: next });
+    send('ev', { t: 'theme', theme: next });
+    sendWorkspace('workspace:event', { t: 'theme', theme: next });
   },
 };
 
@@ -355,7 +368,7 @@ function createWorkspaceWindow() {
     frame: false,
     minWidth: 1024,
     minHeight: 640,
-    backgroundColor: '#f5f7fa',
+    backgroundColor: config.get('theme') === 'dark' ? '#0f1115' : '#f5f7fa',
     show: false,
     title: '近传 · 远程工位',
     icon: asset('icon.ico'),
@@ -377,6 +390,8 @@ function createWorkspaceWindow() {
   });
   workspaceWin.on('maximize', () => sendWorkspace('workspace:event', { t: 'window', maximized: true }));
   workspaceWin.on('unmaximize', () => sendWorkspace('workspace:event', { t: 'window', maximized: false }));
+  workspaceWin.on('enter-full-screen', () => sendWorkspace('workspace:event', { t: 'window', fullscreen: true }));
+  workspaceWin.on('leave-full-screen', () => sendWorkspace('workspace:event', { t: 'window', fullscreen: false }));
   workspaceWin.on('close', (e) => {
     if (!quitting) {
       e.preventDefault();
@@ -414,6 +429,70 @@ function showChat() {
       `document.documentElement.dataset.theme=${JSON.stringify(workspaceTheme)};`
     ).catch(() => {});
   }
+}
+
+// ---------- 加入别人的群聊（桌面端不必扫码） ----------
+function openJoinWindow(rawUrl) {
+  let url;
+  try {
+    url = new URL(String(rawUrl || '').trim());
+  } catch {
+    return { ok: false, error: '邀请链接格式不正确' };
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { ok: false, error: '只支持局域网 http/https 邀请链接' };
+  }
+  if (String(rawUrl).length > 2048) return { ok: false, error: '链接过长' };
+  if (!url.searchParams.get('t')) {
+    return { ok: false, error: '链接里缺少访问令牌，请从电脑端重新复制完整邀请链接' };
+  }
+  if (!joinWin || joinWin.isDestroyed()) {
+    const openExternalSafe = (target) => {
+      try {
+        const parsed = new URL(target);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') shell.openExternal(target);
+      } catch {}
+    };
+    joinWin = new BrowserWindow({
+      width: 420,
+      height: 820,
+      minWidth: 360,
+      minHeight: 560,
+      title: '近传 · 加入的群聊',
+      icon: asset('icon.ico'),
+      autoHideMenuBar: true,
+      backgroundColor: '#f6f7fb',
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        webSecurity: true,
+        spellcheck: false,
+        partition: 'persist:nearsend-joined',
+      },
+    });
+    joinWin.setMenu(null);
+    joinWin.webContents.setWindowOpenHandler(({ url: target }) => {
+      openExternalSafe(target);
+      return { action: 'deny' };
+    });
+    joinWin.webContents.on('will-navigate', (e, target) => {
+      try {
+        if (new URL(target).origin !== joinOrigin) {
+          e.preventDefault();
+          openExternalSafe(target);
+        }
+      } catch {
+        e.preventDefault();
+      }
+    });
+    joinWin.on('closed', () => { joinWin = null; });
+  }
+  joinOrigin = url.origin;
+  joinWin.loadURL(url.toString()).catch((err) => console.error('[join] load', err.message));
+  joinWin.show();
+  joinWin.focus();
+  return { ok: true };
 }
 
 // ---------- 托盘 ----------
@@ -501,6 +580,9 @@ function refreshUrl(force) {
   const url = `http://${nic.address}:${server.port}/?t=${config.get('token')}`;
   if (url === currentUrl && !force) return;
   currentUrl = url;
+  currentQr = '';
+  // 先把旧二维码清掉，生成失败时界面不会把旧 IP/旧令牌的码当成新码展示
+  send('ev', { t: 'url', url, qr: '' });
   QRCode.toDataURL(url, {
     margin: 1,
     width: 620,
@@ -508,6 +590,8 @@ function refreshUrl(force) {
     color: { dark: '#0d0d0f', light: '#ffffff' },
   })
     .then((dataUrl) => {
+      // 生成二维码期间 NIC/令牌可能又变了，旧结果不能覆盖新链接
+      if (url !== currentUrl) return;
       currentQr = dataUrl;
       send('ev', { t: 'url', url, qr: currentQr });
       if (server) server.broadcast({ t: 'url', url });
@@ -543,7 +627,7 @@ function openFirewall() {
   const script = [
     "Start-Process -FilePath netsh -Verb RunAs -ArgumentList @(",
     "'advfirewall','firewall','add','rule','name=NearSend','dir=in','action=allow',",
-    `'program=${safeExe}','enable=yes','profile=any')`,
+    `'program="${safeExe}"','enable=yes','profile=any')`,
   ].join('');
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   return new Promise((resolve) => {
@@ -625,7 +709,8 @@ function statePayload() {
 function chatSummaryPayload() {
   const snap = server ? server.snapshot() : null;
   const msgs = store ? store.messages() : [];
-  const last = msgs.filter((m) => m.kind !== 'system' && !m.recalled).slice(-1)[0] || null;
+  const visible = msgs.filter((m) => m.kind !== 'system' && !m.recalled);
+  const last = visible.slice(-1)[0] || null;
   return {
     room: snap ? snap.room : null,
     members: snap ? snap.members : [],
@@ -636,6 +721,17 @@ function chatSummaryPayload() {
       author: last.author ? last.author.name : '',
       ts: last.ts,
     } : null,
+    recent: visible.slice(-12).map((m) => ({
+      id: m.id,
+      ts: m.ts,
+      from: m.from === 'pc' ? 'pc' : 'phone',
+      mine: m.uid === 'host' || (!m.uid && m.from === 'pc'),
+      author: m.author && m.author.name ? m.author.name : (m.from === 'pc' ? '我' : '成员'),
+      kind: m.kind,
+      text: m.kind === 'text'
+        ? String(m.text || '').slice(0, 300)
+        : (m.kind === 'image' ? '[图片]' : `[文件] ${m.name || ''}`),
+    })),
   };
 }
 
@@ -715,9 +811,11 @@ function registerIpc() {
     return publishFiles(paths).map((m) => m.id);
   });
 
-  ipcMain.on('delete', (_e, { id, purge }) => {
+  ipcMain.on('delete', (_e, payload) => {
+    const { id, purge } = payload || {};
     // 删掉上传中的气泡时一并结束上传，避免文件继续写进保存目录
     if (uploads) uploads.abort(id);
+    if (server) server.forgetUpload(id);
     core.remove(id, !!purge);
   });
 
@@ -780,7 +878,12 @@ function registerIpc() {
       buttonLabel: '使用此文件夹',
     });
     if (r.canceled || !r.filePaths[0]) return config.get('saveDir');
-    fs.mkdirSync(r.filePaths[0], { recursive: true });
+    try {
+      fs.mkdirSync(r.filePaths[0], { recursive: true });
+    } catch (err) {
+      console.error('[settings] save dir', err.message);
+      return config.get('saveDir');
+    }
     config.patch({ saveDir: r.filePaths[0] });
     return r.filePaths[0];
   });
@@ -793,9 +896,11 @@ function registerIpc() {
 
   ipcMain.handle('settings:clear', (_e, purgeFiles) => {
     if (uploads) uploads.abortAll();
+    if (server) server.forgetAllUploads();
     store.clear(!!purgeFiles);
     if (server) server.broadcast({ t: 'clear' });
     send('ev', { t: 'clear' });
+    sendWorkspace('workspace:event', { t: 'chat-summary', chat: chatSummaryPayload() });
     setUnread(0);
     return true;
   });
@@ -855,12 +960,27 @@ function registerIpc() {
   ipcMain.handle('workspace:state', () => ({
     version: app.getVersion(),
     platform: process.platform,
+    theme: config.get('theme') === 'dark' ? 'dark' : 'light',
     chat: chatSummaryPayload(),
     remote: remote ? remote.state() : null,
     home: os.hostname(),
   }));
   ipcMain.handle('workspace:chat-summary', () => chatSummaryPayload());
   ipcMain.handle('workspace:open-chat', () => { showChat(); return true; });
+  ipcMain.handle('workspace:send-group-text', (_e, text) => {
+    const value = String(text || '').trim().slice(0, 20000);
+    if (!value) return false;
+    core.publish({
+      from: 'pc',
+      uid: 'host',
+      author: hostAuthor(),
+      kind: 'text',
+      text: value,
+      mentions: server ? server.mentionsFor(value, 'host') : [],
+    });
+    return true;
+  });
+  ipcMain.handle('group:join', (_e, url) => openJoinWindow(url));
   ipcMain.handle('workspace:theme', (_e, theme) => {
     workspaceTheme = theme === 'dark' ? 'dark' : 'light';
     core.setTheme(workspaceTheme);
@@ -898,6 +1018,13 @@ function registerIpc() {
     else if (action === 'maximize') {
       if (workspaceWin.isMaximized()) workspaceWin.unmaximize();
       else workspaceWin.maximize();
+    } else if (action === 'fullscreen') {
+      const next = !workspaceWin.isFullScreen();
+      workspaceWin.setFullScreen(next);
+      return next;
+    } else if (action === 'exit-fullscreen') {
+      workspaceWin.setFullScreen(false);
+      return false;
     } else if (action === 'close') workspaceWin.hide();
     return true;
   });
@@ -951,6 +1078,27 @@ function registerIpc() {
     return remote.sendFile(r.filePaths[0]);
   });
   ipcMain.handle('remote:send-file', (_e, filePath) => (remote ? remote.sendFile(String(filePath || '')) : null));
+  ipcMain.handle('remote:get-file', (_e, remotePath) => (remote ? remote.requestRemoteFile(String(remotePath || '')) : false));
+  ipcMain.handle('remote:save-received', async (_e, filePath) => {
+    const downloads = path.join(app.getPath('downloads'), 'NearSend');
+    const src = path.resolve(String(filePath || ''));
+    if (!src.startsWith(path.resolve(downloads) + path.sep)) return null;
+    let st;
+    try { st = fs.statSync(src); } catch { return null; }
+    if (!st.isFile()) return null;
+    const r = await dialog.showSaveDialog(workspaceWin, {
+      title: '另存收到的文件',
+      defaultPath: path.join(app.getPath('downloads'), path.basename(src)),
+    });
+    if (r.canceled || !r.filePath) return null;
+    try {
+      fs.copyFileSync(src, r.filePath);
+      return r.filePath;
+    } catch {
+      return null;
+    }
+  });
+  ipcMain.handle('remote:cancel-file', (_e, id) => (remote ? remote.cancelTransfer(String(id || '')) : false));
   ipcMain.handle('remote:send-file-to-controller', async (_e, filePath) => {
     if (!remote) return null;
     if (filePath) return remote.sendFileToActive(String(filePath));
@@ -988,6 +1136,16 @@ function registerIpc() {
     return r.filePath;
   });
   ipcMain.on('remote:input', (_e, evt) => { if (remote) remote.sendInput(evt); });
+  ipcMain.on('remote:drag-file', (e, filePath) => {
+    try {
+      const p = String(filePath || '');
+      if (!p || !fs.statSync(p).isFile()) return;
+      const icon = nativeImage.createFromPath(asset('icon.png')).resize({ width: 32, height: 32 });
+      e.sender.startDrag({ file: p, icon });
+    } catch (err) {
+      console.error('[remote] drag file', err.message);
+    }
+  });
   ipcMain.on('remote:clipboard', (_e, text) => { if (remote) remote.sendClipboard(text); });
   ipcMain.on('remote:display', (_e, index) => { if (remote) remote.setDisplay(index); });
   ipcMain.on('remote:quality', (_e, quality) => { if (remote) remote.setQuality(quality); });
@@ -1106,6 +1264,8 @@ async function boot() {
   if (!config.get('v3ThemeInit')) {
     config.patch({ theme: 'light', v3ThemeInit: true });
   }
+  // 工作台和群聊小窗共用同一个主题真源，避免打开群聊时把深色又切回浅色
+  workspaceTheme = config.get('theme') === 'dark' ? 'dark' : 'light';
   applyInstallerPrefs();
 
   const saveDir = config.get('saveDir');
@@ -1161,7 +1321,12 @@ async function boot() {
     sendWorkspace('workspace:event', { t: 'remote-state', state });
   });
   remote.on('session', (session) => sendWorkspace('workspace:event', { t: 'session', session }));
-  remote.on('frame', (frame) => sendWorkspace('workspace:event', { t: 'frame', frame }));
+  remote.on('frame', (frame) => {
+    // 工作台隐藏时没必要把 JPEG 帧继续送进渲染进程解码
+    if (workspaceWin && !workspaceWin.isDestroyed() && workspaceWin.isVisible()) {
+      sendWorkspace('workspace:event', { t: 'frame', frame });
+    }
+  });
   remote.on('chat', (chat) => sendWorkspace('workspace:event', { t: 'chat', chat }));
   remote.on('clipboard', (clipboard) => sendWorkspace('workspace:event', { t: 'clipboard', clipboard }));
   remote.on('file-progress', (file) => sendWorkspace('workspace:event', { t: 'file-progress', file }));

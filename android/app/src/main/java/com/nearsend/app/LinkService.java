@@ -57,6 +57,7 @@ public class LinkService extends Service {
     };
 
     public static void ensure(Context c, String deviceId) {
+        if (!Prefs.backgroundReceive()) return;
         Intent i = new Intent(c, LinkService.class);
         i.setAction(ACTION_ENSURE);
         i.putExtra(EXTRA_ID, deviceId);
@@ -79,7 +80,8 @@ public class LinkService extends Service {
         i.setAction(ACTION_RESUME);
         i.putExtra(EXTRA_ID, deviceId);
         try {
-            c.startService(i);
+            if (started) c.startService(i);
+            else startCompat(c, i);
         } catch (Exception ignored) {
         }
     }
@@ -122,9 +124,13 @@ public class LinkService extends Service {
             return START_STICKY;
         }
         if (ACTION_ENSURE.equals(action)) {
-            deviceId = intent.getStringExtra(EXTRA_ID);
+            String next = intent.getStringExtra(EXTRA_ID);
+            // 切换到另一台电脑时不能继续复用旧连接
+            if (next != null && !next.equals(deviceId)) closeWs();
+            deviceId = next;
             receiving = true;
             goForeground();
+            if (foreground) updateForegroundText(getString(R.string.svc_receiving));
             connectIfNeeded();
         } else if (ACTION_PAUSE.equals(action)) {
             receiving = false;
@@ -132,9 +138,11 @@ public class LinkService extends Service {
             updateForegroundText(getString(R.string.svc_paused));
         } else if (ACTION_RESUME.equals(action)) {
             String id = intent.getStringExtra(EXTRA_ID);
+            if (id != null && !id.equals(deviceId)) closeWs();
             if (id != null) deviceId = id;
             receiving = true;
             if (!foreground) goForeground();
+            else updateForegroundText(getString(R.string.svc_receiving));
             connectIfNeeded();
         }
         return START_STICKY;
@@ -211,30 +219,39 @@ public class LinkService extends Service {
         }
         Device d = DeviceStore.get().byId(deviceId);
         if (d == null) return;
-        if (ws != null && ws.isOpen()) return;
+        // 连接中或已连接都不重复开新连接；失败会走 onClosed 清空 ws
+        if (ws != null) return;
         if (!Prefs.backgroundReceive()) return;
 
         closeWs();
         retry = 1200;
-        ws = new WsClient();
-        ws.connect(d.ip, d.port, "/ws?t=" + d.token, 4000, new WsClient.Listener() {
+        final WsClient client = new WsClient();
+        ws = client;
+        client.connect(d.ip, d.port, "/ws?t=" + d.token, 4000, new WsClient.Listener() {
             @Override
             public void onOpen() {
+                if (ws != client) return;
                 retry = 1200;
                 updateForegroundText(getString(R.string.svc_receiving));
             }
 
             @Override
             public void onMessage(String text) {
+                if (ws != client) return;
                 handle(text);
             }
 
             @Override
             public void onClosed(String reason) {
+                if (ws != client) return;
+                ws = null;
                 if (!receiving) return;
+                if (!Prefs.autoReconnect()) {
+                    updateForegroundText(getString(R.string.svc_paused));
+                    return;
+                }
                 updateForegroundText(getString(R.string.svc_reconnecting));
                 h.removeCallbacks(retryTask);
-                if (!Prefs.autoReconnect()) return;
                 h.postDelayed(retryTask, retry);
                 retry = Math.min((int) (retry * 1.8), 15000);
             }
@@ -333,7 +350,7 @@ public class LinkService extends Service {
     private void checkHealth() {
         if (!receiving) return;
         if (ws == null || !ws.isOpen()) {
-            connectIfNeeded();
+            if (Prefs.autoReconnect()) connectIfNeeded();
             return;
         }
         long idle = System.currentTimeMillis() - ws.lastRecvAt();

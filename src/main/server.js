@@ -150,6 +150,8 @@ class LanServer extends EventEmitter {
 
     // 手机断线重发时用 cid 去重，避免同一条文字出现两次
     this.recentCids = new Map();
+    // 上传会话 -> 归属成员。上传 id 会随消息广播出去，不能仅凭 id 就让别人写同一个文件
+    this.uploadOwners = new Map();
 
     this.uploads.on('progress', (p) => this.onProgress(p));
     this.timer = setInterval(() => this.sweep(), 60 * 1000);
@@ -157,7 +159,8 @@ class LanServer extends EventEmitter {
   }
 
   async start(preferred) {
-    for (let p = preferred; p < preferred + 12; p += 1) {
+    const last = Math.min(preferred + 11, 65535);
+    for (let p = preferred; p <= last; p += 1) {
       const ok = await new Promise((resolve) => {
         const onError = (err) => {
           this.server.removeListener('listening', onListening);
@@ -185,6 +188,8 @@ class LanServer extends EventEmitter {
     clearInterval(this.hbTimer);
     for (const c of this.clients) c.ws.terminate();
     this.clients.clear();
+    this.uploadOwners.clear();
+    this.recentCids.clear();
     if (this.uploads.abortAll) this.uploads.abortAll();
     this.wss.close();
     this.server.close();
@@ -264,6 +269,16 @@ class LanServer extends EventEmitter {
   /** 群主界面用：群信息 + 成员 + 黑名单 */
   snapshot() {
     return this.rosterPayload();
+  }
+
+  forgetUpload(id) {
+    this.uploadOwners.delete(id);
+    this.lastProgress.delete(id);
+  }
+
+  forgetAllUploads() {
+    this.uploadOwners.clear();
+    this.lastProgress.clear();
   }
 
   publishSystem(text, meta) {
@@ -462,6 +477,19 @@ class LanServer extends EventEmitter {
     return { legacy: false, member, invalid: !member };
   }
 
+  /**
+   * 上传分片/完成请求的成员校验。
+   * 上传 id 和上传进度会广播给全群；如果只看令牌，任何群成员都能篡改别人的在传文件。
+   */
+  uploadSessionAuth(req, id) {
+    const auth = this.authHttp(req, null);
+    if (auth.invalid || (!auth.member && !auth.legacy)) return { ok: false, code: 401 };
+    const uid = auth.member ? auth.member.id : 'legacy';
+    const owner = this.uploadOwners.get(id);
+    if (owner && owner !== uid) return { ok: false, code: 403 };
+    return { ok: true, uid };
+  }
+
   /** 消息里 @ 到的成员。先把名字按长度倒序，避免「张三丰」被「张三」截胡。 */
   mentionsFor(text, authorId) {
     const value = String(text || '');
@@ -594,12 +622,14 @@ class LanServer extends EventEmitter {
         const member = auth.member;
         const author = member ? this.authorOf(member) : this.legacyAuthor(req);
         const uid = member ? member.id : 'legacy';
-        const size = Number(meta.size) || 0;
+        const requestedSize = Number(meta.size);
+        const size = Number.isFinite(requestedSize) && requestedSize > 0 ? Math.floor(requestedSize) : 0;
         // mime 会进 HTTP 响应头；清掉换行/控制字符，防止写头失败或头注入
         const mime = typeof meta.mime === 'string'
           ? meta.mime.replace(/[\r\n\x00-\x1f\x7f]/g, '').trim().slice(0, 120)
           : '';
         const session = await this.uploads.init(Object.assign({}, meta, { mime }));
+        this.uploadOwners.set(session.id, uid);
         this.core.publish({
           id: session.id,
           from: 'phone',
@@ -619,6 +649,8 @@ class LanServer extends EventEmitter {
       const uploadMatch = p.match(/^\/api\/upload\/([a-f0-9]{16})$/);
       if (uploadMatch) {
         const id = uploadMatch[1];
+        const allowed = this.uploadSessionAuth(req, id);
+        if (!allowed.ok) return json(res, allowed.code, { error: allowed.code === 401 ? 'unauthorized' : 'forbidden' });
         if (req.method === 'GET') {
           const info = this.uploads.info(id);
           return info ? json(res, 200, { offset: info.offset, size: info.size }) : json(res, 404, { error: 'gone' });
@@ -639,7 +671,10 @@ class LanServer extends EventEmitter {
           // /done 重发：文件已经落盘，直接把结果回给客户端
           return json(res, 200, { id, name: existing.name, size: existing.size });
         }
+        const allowed = this.uploadSessionAuth(req, id);
+        if (!allowed.ok) return json(res, allowed.code, { ok: false, error: allowed.code === 401 ? 'unauthorized' : 'forbidden' });
         const file = await this.uploads.finish(id);
+        this.uploadOwners.delete(id);
         this.lastProgress.delete(id);
         this.core.patch(
           id,
@@ -676,8 +711,8 @@ class LanServer extends EventEmitter {
         if (!mine) return json(res, 403, { ok: false, error: 'delete not allowed' });
         const purge = url.searchParams.get('purge') === '1';
         // 删除的如果是正在上传的消息，顺手结束上传会话，避免文件继续落盘却没人认领
+        this.forgetUpload(delMatch[1]);
         this.uploads.abort(delMatch[1]);
-        this.lastProgress.delete(delMatch[1]);
         const ok = this.core.remove(delMatch[1], purge);
         return json(res, ok ? 200 : 404, { ok });
       }
@@ -743,10 +778,16 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
       'Cache-Control': 'private, max-age=60',
       'X-Content-Type-Options': 'nosniff',
     };
+    if (inline) {
+      // 缩略图/预览可能在浏览器里被直接打开；sandbox 阻止 SVG/HTML 变成本地页面脚本
+      headers['Content-Security-Policy'] = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+    }
     if (!inline) {
-      const ascii = (msg.name || path.basename(msg.path)).replace(/[^\x20-\x7e]/g, '_').replace(/"/g, "'");
+      const ascii = (msg.name || path.basename(msg.path)).replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, "'");
+      const utf8 = encodeURIComponent(msg.name || path.basename(msg.path))
+        .replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
       headers['Content-Disposition'] =
-        `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(msg.name || path.basename(msg.path))}`;
+        `attachment; filename="${ascii}"; filename*=UTF-8''${utf8}`;
     }
 
     const head = req.method === 'HEAD';
@@ -975,7 +1016,7 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
         return;
       }
       this.uploads.abort(data.id);
-      this.lastProgress.delete(data.id);
+      this.forgetUpload(data.id);
       this.core.remove(data.id, false);
       return;
     }
@@ -1113,34 +1154,22 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
     const id = String(reply.id || '');
     if (!id || id.length > 64) return undefined;
     const src = this.core.get(id);
+    // 只接受真实存在、未撤回的非系统消息；否则客户端可以伪造/复活引用
+    if (!src || src.recalled || src.kind === 'system') return undefined;
     const out = { id };
-    if (src) {
-      out.from = src.from === 'pc' ? 'pc' : 'phone';
-      out.uid = src.uid || '';
-      out.kind = src.kind === 'image' ? 'image' : src.kind === 'file' ? 'file' : 'text';
-      if (src.author) {
-        out.author = {
-          id: String(src.author.id || '').slice(0, 32),
-          name: plainName(src.author.name, '成员'),
-          color: /^[a-z]{3,12}$/.test(String(src.author.color || '')) ? src.author.color : 'slate',
-          kind: src.author.kind === 'phone' || src.author.kind === 'tablet' ? src.author.kind : 'desktop',
-        };
-      }
-    } else {
-      out.from = reply.from === 'pc' ? 'pc' : 'phone';
-      out.uid = String(reply.uid || '').slice(0, 32);
-      out.kind = reply.kind === 'image' ? 'image' : reply.kind === 'file' ? 'file' : 'text';
-      if (reply.author && typeof reply.author === 'object') {
-        out.author = {
-          id: String(reply.author.id || '').slice(0, 32),
-          name: plainName(reply.author.name, '成员'),
-          color: /^[a-z]{3,12}$/.test(String(reply.author.color || '')) ? reply.author.color : 'slate',
-          kind: reply.author.kind === 'phone' || reply.author.kind === 'tablet' ? reply.author.kind : 'desktop',
-        };
-      }
+    out.from = src.from === 'pc' ? 'pc' : 'phone';
+    out.uid = src.uid || '';
+    out.kind = src.kind === 'image' ? 'image' : src.kind === 'file' ? 'file' : 'text';
+    if (src.author) {
+      out.author = {
+        id: String(src.author.id || '').slice(0, 32),
+        name: plainName(src.author.name, '成员'),
+        color: /^[a-z]{3,12}$/.test(String(src.author.color || '')) ? src.author.color : 'slate',
+        kind: src.author.kind === 'phone' || src.author.kind === 'tablet' ? src.author.kind : 'desktop',
+      };
     }
-    if (out.kind === 'text') out.text = String(src ? src.text : (reply.text || '')).slice(0, 200);
-    else out.name = String(src ? src.name : (reply.name || '')).slice(0, 200);
+    if (out.kind === 'text') out.text = String(src.text || '').slice(0, 200);
+    else out.name = String(src.name || '').slice(0, 200);
     return out;
   }
 
@@ -1186,6 +1215,7 @@ color:#ededf0;display:flex;align-items:center;justify-content:center;margin:0 au
     for (const id of stale) {
       this.core.patch(id, { status: 'error' }, true);
       this.uploads.abort(id);
+      this.uploadOwners.delete(id);
       this.lastProgress.delete(id);
     }
   }

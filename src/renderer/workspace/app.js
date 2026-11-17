@@ -4,6 +4,9 @@
 /* ---------- icons ---------- */
 const ICONS = {
   monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+  expand: '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"/>',
+  compress: '<path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5"/>',
+  cursorArrow: '<path d="M4 2.5l14.5 8.2-6.7 1.4-2.8 6.3z" fill="currentColor" stroke="none"/>',
   laptop: '<rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2.5 20h19"/>',
   play: '<path d="M8 5.5v13l10-6.5z" fill="currentColor" stroke="none"/>',
   shield: '<path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/>',
@@ -38,6 +41,7 @@ const ICONS = {
   star: '<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"/>',
   user: '<circle cx="12" cy="8" r="3.4"/><path d="M4.5 20c.6-3.8 3.2-5.8 7.5-5.8s6.9 2 7.5 5.8"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 5l3 3M14 7l3 3"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l2.3-2.3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-2.3 2.3a4 4 0 0 0 5.7 5.7l1-1"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/>',
   folder: '<path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
@@ -194,6 +198,7 @@ const SESSION_HISTORY = [
   { id: 's5', date: '昨天 16:20–16:48', deviceId: 'dev-2', duration: '28 分钟', quality: '1080p60', latency: '26ms', result: '成功', reason: '用户结束' },
 ];
 
+const pressedRemoteKeys = new Set();
 const state = {
   view: 'devices',
   selectedDeviceId: 'dev-1',
@@ -207,6 +212,8 @@ const state = {
   auditFilter: 'all',
   session: null,
   sessionTimer: null,
+  pendingMove: null,
+  moveRaf: 0,
   wizard: null,
   command: false,
   commandQuery: '',
@@ -227,6 +234,8 @@ const state = {
   pairResolve: null,
   addRole: 'owner',
   windowMaximized: false,
+  windowFullscreen: false,
+  chromeVisible: false,
   incomingUnread: 0,
   uiSettings: (() => { try { return JSON.parse(localStorage.getItem('ns-ui-settings') || '{}'); } catch { return {}; } })(),
 };
@@ -308,7 +317,10 @@ function mergeRemoteState(remoteState) {
     state.selectedDeviceId = real[0].id;
   }
   const badge = document.querySelector('.nav-item[data-view="devices"] .nav-badge');
-  if (badge) badge.textContent = String(Math.max(0, peers.length));
+  if (badge) {
+    badge.textContent = String(Math.max(0, peers.length));
+    badge.hidden = peers.length === 0;
+  }
 }
 function grantById(id) { return GRANTS.find((g) => g.id === id); }
 function effectivePermissions(device) { return device.permissions; }
@@ -357,10 +369,18 @@ function devicePrimary(device) {
 }
 
 /* ---------- shell / nav ---------- */
+function refreshUnreadBadge() {
+  updateUnreadBadge((Number(state.chat?.unread) || 0) + (state.incomingUnread || 0));
+}
 function setView(view) {
   state.view = view;
+  if (view === 'messages') {
+    // 进入消息页就表示用户看到了私聊提醒；群聊未读仍由 chat.unread 维护
+    state.incomingUnread = 0;
+  }
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   render();
+  refreshUnreadBadge();
   document.getElementById('main')?.focus({ preventScroll: true });
 }
 function render() {
@@ -386,13 +406,40 @@ function render() {
 /* ---------- devices view ---------- */
 function renderDevices() {
   const main = document.getElementById('main');
+  const oldSearch = document.getElementById('deviceSearch');
+  const searchFocused = !!oldSearch && document.activeElement === oldSearch;
+  const searchSelStart = oldSearch ? oldSearch.selectionStart : null;
+  const searchSelEnd = oldSearch ? oldSearch.selectionEnd : null;
   const device = deviceById(state.selectedDeviceId) || DEVICES[0];
+  if (!device) {
+    state.selectedDeviceId = null;
+    main.innerHTML = `
+    <div class="page-head">
+      <div class="page-title">
+        <h1>设备</h1>
+        <p>局域网直连 · 首次连接需授权码</p>
+      </div>
+      <div class="page-actions">
+        <button class="btn" data-action="refresh"><span data-icon="refresh"></span>刷新</button>
+        <button class="btn btn-primary" data-action="add-device"><span class="btn-plus">+</span> 添加设备</button>
+      </div>
+    </div>
+    <div class="device-layout">
+      <section class="panel device-panel">
+        <div class="panel-head"><div class="panel-title-row"><b>我的设备</b><span class="count" id="deviceCount">0 台</span></div></div>
+        <div class="device-list" id="deviceList"><div class="card-note" style="padding:18px;line-height:1.7">还没有发现设备。请确认另一台电脑也打开了近传并开启「本机被控」，或点击右上角「添加设备」手动输入 IP。</div></div>
+      </section>
+      <section class="panel detail"><div class="empty-state"><div class="empty-ico">${icon('monitor', 24)}</div><b>等待设备上线</b><p>设备发现走局域网 UDP，不需要账号或云端。</p></div></section>
+    </div>`;
+    hydrateIcons(main);
+    return;
+  }
   state.selectedDeviceId = device.id;
   main.innerHTML = `
     <div class="page-head">
       <div class="page-title">
         <h1>设备</h1>
-        <p>局域网实时发现 · 同一 Wi-Fi · 无 Hub · 首次连接需授权码</p>
+        <p>局域网直连 · 首次连接需授权码</p>
       </div>
       <div class="page-actions">
         <button class="btn" data-action="refresh"><span data-icon="refresh"></span>刷新</button>
@@ -430,6 +477,14 @@ function renderDevices() {
       if (count) count.textContent = `${filteredDevices().length} 台`;
       hydrateIcons(list || main);
     });
+    if (searchFocused) {
+      input.focus();
+      try {
+        const pos = searchSelStart == null ? input.value.length : Math.min(searchSelStart, input.value.length);
+        const end = searchSelEnd == null ? pos : Math.min(searchSelEnd, input.value.length);
+        input.setSelectionRange(pos, Math.max(pos, end));
+      } catch {}
+    }
   }
 }
 
@@ -538,7 +593,7 @@ function overviewTab(device) {
             <div class="kv">
               <dt>控制端</dt><dd>${state.session.grant?.role === 'admin' ? '管理员临时支持' : '本机控制端'}</dd>
               <dt>开始</dt><dd>${new Date(state.session.startAt || Date.now()).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</dd>
-              <dt>画质</dt><dd>${esc(state.session.qualityLabel || '自动 · 1080p')}</dd>
+              <dt>画质</dt><dd>${esc(state.session.qualityLabel || '自动 · 高清')}</dd>
               <dt>传输</dt><dd class="mono">${esc(state.session.capture === 'gdi' ? 'GDI · JPEG' : '局域网 WS')}</dd>
             </div>
             <div style="margin-top:10px"><button class="btn btn-sm btn-soft" data-action="resume-session">${icon('play', 13)} 返回会话</button></div>
@@ -732,7 +787,6 @@ async function init() {
     : state.theme;
   document.documentElement.dataset.theme = actualTheme;
   document.documentElement.dataset.density = state.density;
-  window.workspace?.theme?.(actualTheme);
   hydrateIcons(document);
   const gsIcon = document.querySelector('.gs-icon');
   if (gsIcon) gsIcon.innerHTML = icon('search', 14);
@@ -752,13 +806,17 @@ async function init() {
   bindWindowControls();
   try {
     const payload = await window.workspace.state();
+    if (payload.theme === 'dark' || payload.theme === 'light') {
+      state.theme = payload.theme;
+      try { localStorage.setItem('rd-theme', state.theme); } catch {}
+    }
     state.chat = payload.chat || null;
     if (payload.remote) mergeRemoteState(payload.remote);
     state.diag = await window.workspace.remote.diagnostics().catch(() => null);
     const audit = await window.workspace.remote.audit().catch(() => []);
     audit.forEach(mergeAuditEvent);
     window.workspace.onEvent(handleWorkspaceEvent);
-    updateUnreadBadge(state.chat?.unread || 0);
+    refreshUnreadBadge();
   } catch (err) {
     console.error('workspace state', err);
   }
@@ -799,6 +857,7 @@ function mergeAuditEvent(evt) {
     event: labels[t] || t, code: t.toUpperCase(), actor: evt.actor || '本机', deviceId: device?.id || 'dev-1',
     result: evt.result || '成功', type: kind, detail: evt.detail || '',
   });
+  if (AUDIT.length > 800) AUDIT.length = 800;
 }
 
 async function mergeRemoteAudit() {
@@ -808,8 +867,18 @@ async function mergeRemoteAudit() {
 }
 function handleWorkspaceEvent(payload) {
   if (!payload || typeof payload !== 'object') return;
+  if (payload.t === 'theme') {
+    const next = payload.theme === 'dark' ? 'dark' : 'light';
+    if (state.theme !== next) {
+      state.theme = next;
+      try { localStorage.setItem('rd-theme', next); } catch {}
+      render();
+    }
+    return;
+  }
   if (payload.t === 'peers') {
     mergeRemoteState({ ...(state.remote || {}), peers: payload.peers || [] });
+    if (state.session && !deviceById(state.session.deviceId)) closeSession('远程结束');
     if (state.view === 'devices') renderDevices();
     else if (state.view === 'messages') renderMessages();
     if (state.agent) renderAgent();
@@ -861,7 +930,7 @@ function handleWorkspaceEvent(payload) {
     if (state.view === 'messages' && state.dmPeerId === peerId) renderMessages();
     else {
       state.incomingUnread += 1;
-      updateUnreadBadge(state.incomingUnread);
+      refreshUnreadBadge();
       toast(`${chat.from || '同事'}：${String(chat.text).slice(0, 28)}`, 'info');
     }
     return;
@@ -873,7 +942,12 @@ function handleWorkspaceEvent(payload) {
   }
   if (payload.t === 'file-progress') {
     const evt = payload.file || {};
-    if (evt.done) toast(evt.direction === 'in' ? `收到文件 ${evt.name}` : `文件已发送 ${evt.name}`, evt.error ? 'danger' : 'success');
+    if (evt.done) {
+      if (evt.error) {
+        const canceled = String(evt.error).includes('取消');
+        toast(canceled ? '文件传输已取消' : `文件传输失败：${evt.error}`, canceled ? 'warn' : 'danger');
+      } else toast(evt.direction === 'in' ? `收到文件 ${evt.name}` : `文件已发送 ${evt.name}`, 'success');
+    }
     if (!state.session) return;
     let f = state.session.files.find((x) => x.id === evt.id);
     if (!f) { f = { id: evt.id, name: evt.name, size: evt.size, received: 0, progress: 0 }; state.session.files.push(f); }
@@ -881,7 +955,19 @@ function handleWorkspaceEvent(payload) {
     f.size = evt.size;
     f.done = !!evt.done;
     f.error = evt.error || '';
-    if (state.session.drawer === 'files') renderSession();
+    f.direction = evt.direction || f.direction;
+    if (evt.path) f.path = evt.path;
+    if (state.session.drawer === 'files') {
+      // 只替换这一行，避免每 300ms 重建整个会话 DOM 把远程画面清空
+      const row = [...document.querySelectorAll('.file-row')].find((r) => r.dataset.fileId === f.id);
+      if (row) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = fileRowHtml(f);
+        row.replaceWith(tmp.firstElementChild);
+      } else {
+        renderSession();
+      }
+    }
     return;
   }
   if (payload.t === 'audit') {
@@ -891,18 +977,22 @@ function handleWorkspaceEvent(payload) {
   }
   if (payload.t === 'chat-summary') {
     state.chat = payload.chat;
-    updateUnreadBadge(payload.chat?.unread || 0);
+    refreshUnreadBadge();
     if (state.view === 'messages') renderMessages();
     return;
   }
   if (payload.t === 'unread') {
     if (state.chat) state.chat.unread = payload.n;
-    updateUnreadBadge(payload.n);
+    refreshUnreadBadge();
     return;
   }
   if (payload.t === 'navigate') { setView(payload.view); return; }
   if (payload.t === 'window') {
     state.windowMaximized = !!payload.maximized;
+    if (typeof payload.fullscreen === 'boolean') {
+      state.windowFullscreen = payload.fullscreen;
+      syncFullscreenChrome();
+    }
     return;
   }
 }
@@ -910,8 +1000,10 @@ function handleWorkspaceEvent(payload) {
 function dmKey(peerId) { return `ns-dm:${peerId}`; }
 function loadDM(peerId) {
   if (!state.dmConversations[peerId]) {
-    try { state.dmConversations[peerId] = JSON.parse(localStorage.getItem(dmKey(peerId)) || '[]'); }
-    catch { state.dmConversations[peerId] = []; }
+    try {
+      const saved = JSON.parse(localStorage.getItem(dmKey(peerId)) || '[]');
+      state.dmConversations[peerId] = Array.isArray(saved) ? saved : [];
+    } catch { state.dmConversations[peerId] = []; }
   }
   return state.dmConversations[peerId];
 }
@@ -925,7 +1017,58 @@ function pushDM(peerId, msg) {
   state.dmConversations[peerId] = list;
   saveDM(peerId);
 }
-function renderMessages() {
+function openJoinGroupModal() {
+  openInfoModal({
+    title: '加入其他人的群聊',
+    sub: '桌面端无需扫码：粘贴群主复制出来的邀请链接',
+    body: `<div class="field"><label for="joinGroupUrl">邀请链接</label><input class="input" id="joinGroupUrl" placeholder="http://192.168.1.5:8899/?t=..." autocomplete="off"><div class="card-note" style="margin-top:7px;line-height:1.7">在群主电脑的「团队群聊 → 邀请成员」里复制链接。加入后会打开一个独立聊天窗口，和浏览器打开的是同一个群聊。</div></div>`,
+    actions: [
+      { label: '取消', onClick: closeModal },
+      {
+        label: '加入群聊', primary: true,
+        onClick: async () => {
+          const input = document.getElementById('joinGroupUrl');
+          const value = (input?.value || '').trim();
+          if (!value) { toast('请粘贴邀请链接', 'warn'); return; }
+          try {
+            const res = await window.workspace.joinGroup(value);
+            if (res && res.ok) {
+              closeModal();
+              toast('已打开加入的群聊窗口', 'success');
+            } else {
+              toast((res && res.error) || '加入失败', 'danger');
+            }
+          } catch (err) {
+            toast(err.message || '加入失败', 'danger');
+          }
+        },
+      },
+    ],
+  });
+  setTimeout(() => {
+    const field = document.getElementById('joinGroupUrl');
+    if (!field) return;
+    field.focus();
+    field.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        document.querySelector('[data-info-index="1"]')?.click();
+      }
+    });
+  }, 50);
+}
+
+function renderMessages(opts = {}) {
+  const oldInput = document.getElementById('dmInput');
+  const hadFocus = !!oldInput && document.activeElement === oldInput;
+  const draft = oldInput && !opts.reset ? oldInput.value : '';
+  const selStart = oldInput && !opts.reset ? oldInput.selectionStart : null;
+  const selEnd = oldInput && !opts.reset ? oldInput.selectionEnd : null;
+  const oldTeam = document.getElementById('teamInput');
+  const teamHadFocus = !!oldTeam && document.activeElement === oldTeam;
+  const teamDraft = oldTeam ? oldTeam.value : '';
+  const teamSelStart = oldTeam ? oldTeam.selectionStart : null;
+  const teamSelEnd = oldTeam ? oldTeam.selectionEnd : null;
   const main = document.getElementById('main');
   const peers = (state.peers || []).filter((p) => !p.self);
   const chat = state.chat || {};
@@ -934,8 +1077,8 @@ function renderMessages() {
   const msgs = activePeer ? loadDM(activePeer.id) : [];
   main.innerHTML = `
     <div class="page-head">
-      <div class="page-title"><h1>消息</h1><p>团队群聊保留全部原有功能；同事私聊按设备直连，不上云</p></div>
-      <div class="page-actions"><button class="btn" data-action="open-team-chat">${icon('external', 14)} 打开团队群聊</button></div>
+      <div class="page-title"><h1>消息</h1><p>团队群聊与同事私聊 · 局域网直连</p></div>
+      <div class="page-actions"><button class="btn" data-action="join-group">${icon('link', 14)} 加入群聊</button><button class="btn" data-action="open-team-chat">${icon('external', 14)} 打开团队群聊</button></div>
     </div>
     <div class="messages-layout">
       <section class="panel messages-side">
@@ -962,17 +1105,13 @@ function renderMessages() {
           </div>
           <div class="conversation-composer"><input id="dmInput" class="input" placeholder="发消息给 ${esc(activePeer.name)}…" autocomplete="off"><button class="btn btn-primary" data-action="dm-send" data-peer-id="${activePeer.id}">发送</button></div>
         ` : `
-          <div class="conversation-head"><div><b>团队群聊</b><span>原有群聊完整保留；手机扫码即可加入</span></div></div>
-          <div class="conversation-body">
-            <div class="team-chat-card">
-              <div class="team-chat-icon">${icon('chat', 24)}</div>
-              <b>${esc(room.name || '团队群聊')}</b>
-              <p>${chat.members?.length ? `${chat.members.filter((m) => m.online).length} 人在线 · ${chat.members.length} 位成员` : '打开消息中心，查看群成员、@、已读、图片和文件传输。'}</p>
-              ${chat.last ? `<div class="team-last"><span>${esc(chat.last.author || '')}</span>${esc(chat.last.text || '')}</div>` : ''}
-              <button class="btn btn-primary" data-action="open-team-chat">${icon('external', 14)} 打开团队群聊</button>
-            </div>
-            <div class="card-note" style="text-align:center">群聊继续使用现有近传房间，手机端/浏览器端不需要升级。</div>
+          <div class="conversation-head"><div><b>${esc(room.name || '团队群聊')}</b><span>${(chat.members || []).filter((m) => m.online).length || 1} 人在线 · 团队群聊</span></div><div style="display:flex;gap:6px"><button class="btn btn-sm" data-action="copy-invite">${icon('link', 13)} 邀请</button><button class="btn btn-sm" data-action="open-team-chat">${icon('external', 13)} 完整群聊</button></div></div>
+          <div class="conversation-body team-feed" id="teamBody">
+            ${(chat.recent || []).length
+              ? (chat.recent || []).map((m) => `<div class="dm-row ${m.mine ? 'out' : ''}"><div class="dm-bubble"><div>${esc(m.text)}</div><span>${esc(m.mine ? '我' : m.author)} · ${new Date(m.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span></div></div>`).join('')
+              : `<div class="empty-state"><div class="empty-ico">${icon('chat', 22)}</div><b>团队群聊已就绪</b><p>这里显示最近消息；完整成员、图片、文件和已读记录请在「完整群聊」里查看。</p></div>`}
           </div>
+          <div class="conversation-composer"><input id="teamInput" class="input" placeholder="发消息到 ${esc(room.name || '团队群聊')}…" autocomplete="off"><button class="btn btn-primary" data-action="team-send">发送</button></div>
         `}
       </section>
     </div>`;
@@ -982,10 +1121,59 @@ function renderMessages() {
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendDM(activePeer.id); }
     });
-    input.focus();
+    if (draft) input.value = draft;
+    if (opts.focus || hadFocus || !oldInput) {
+      input.focus();
+      try {
+        const pos = selStart == null ? input.value.length : Math.min(selStart, input.value.length);
+        const end = selEnd == null ? pos : Math.min(selEnd, input.value.length);
+        input.setSelectionRange(pos, Math.max(pos, end));
+      } catch {}
+    }
   }
   const body = document.getElementById('dmBody');
   if (body) body.scrollTop = body.scrollHeight;
+  const teamBody = document.getElementById('teamBody');
+  if (teamBody) teamBody.scrollTop = teamBody.scrollHeight;
+  const teamInput = document.getElementById('teamInput');
+  if (teamInput) {
+    teamInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTeamMessage(); }
+    });
+    if (teamDraft) teamInput.value = teamDraft;
+    if (teamHadFocus) {
+      teamInput.focus();
+      try {
+        const pos = teamSelStart == null ? teamInput.value.length : Math.min(teamSelStart, teamInput.value.length);
+        const end = teamSelEnd == null ? pos : Math.min(teamSelEnd, teamInput.value.length);
+        teamInput.setSelectionRange(pos, Math.max(pos, end));
+      } catch {}
+    }
+  }
+}
+async function sendTeamMessage() {
+  const input = document.getElementById('teamInput');
+  const text = (input?.value || '').trim();
+  if (!text) return;
+  if (input) input.value = '';
+  const ok = await window.workspace.sendGroupText(text).catch(() => false);
+  if (!ok) {
+    const nowInput = document.getElementById('teamInput');
+    if (nowInput && !nowInput.value) nowInput.value = text;
+    toast('发送失败，请稍后重试', 'danger');
+  }
+}
+async function copyGroupInvite() {
+  try {
+    const inv = await window.workspace.invite();
+    if (inv && inv.url) {
+      copyText(inv.url, '邀请链接已复制，发给另一台电脑即可加入');
+      return;
+    }
+    toast('暂时拿不到邀请链接，请确认电脑端服务正常', 'warn');
+  } catch {
+    toast('复制失败，请稍后重试', 'danger');
+  }
 }
 async function sendDM(peerId) {
   const input = document.getElementById('dmInput');
@@ -1001,7 +1189,8 @@ async function sendDM(peerId) {
 /* ---------- sessions view ---------- */
 function renderSessions() {
   const main = document.getElementById('main');
-  const current = state.session && !state.session.closed ? state.session : null;
+  const current = state.session && !state.session.closed && deviceById(state.session.deviceId)
+    ? state.session : null;
   const currentDevice = current ? deviceById(current.deviceId) : null;
   const history = SESSION_HISTORY.filter((s) => deviceById(s.deviceId) && (DEMO_ENABLED || !deviceById(s.deviceId).demo));
   main.innerHTML = `
@@ -1021,7 +1210,7 @@ function renderSessions() {
           </div>
           <div class="stat-row" style="min-width:300px;flex:0 0 auto">
             <div class="stat"><span>时长</span><b data-session-duration>${formatDuration(current.duration || 0)}</b></div>
-            <div class="stat"><span>画质</span><b>${esc(current.qualityLabel || '自动 1080p60')}</b></div>
+            <div class="stat"><span>画质</span><b>${esc(current.qualityLabel || '自动 · 高清')}</b></div>
             <div class="stat"><span>延迟</span><b>${current.real ? 'LAN' : '18 ms'}</b></div>
           </div>
           <button class="btn btn-primary" data-action="resume-session">${icon('play', 14)} 返回会话</button>
@@ -1426,6 +1615,7 @@ function closeModal() {
   state.wizard = null;
   state.modalInfoActions = null;
   if (state.pairResolve) { const resolve = state.pairResolve; state.pairResolve = null; resolve(null); }
+  if (state.promptResolve) { const resolve = state.promptResolve; state.promptResolve = null; resolve(null); }
 }
 function modalHead(title, sub = '') {
   return `<div class="modal-head"><b>${esc(title)}</b>${sub ? `<span class="modal-sub">${esc(sub)}</span>` : ''}<button class="icon-btn" data-modal-close aria-label="关闭">${icon('x')}</button></div>`;
@@ -1436,6 +1626,47 @@ function modalFoot(buttons, note = '') {
 function openInfoModal({ title, sub, body, actions = [], size = 'md' }) {
   state.modalInfoActions = actions;
   openModal(`${modalHead(title, sub)}<div class="modal-body">${body}</div>${modalFoot(actions.map((a, i) => `<button class="btn ${a.primary ? 'btn-primary' : ''} ${a.danger ? 'btn-danger' : ''}" data-info-index="${i}">${esc(a.label)}</button>`).join(''))}`, { size });
+}
+function openPrompt(title, placeholder = '', note = '') {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      state.promptResolve = null;
+      const root = document.getElementById('modalRoot');
+      if (root?.innerHTML) closeModal();
+      resolve(value);
+    };
+    state.promptResolve = finish;
+    openInfoModal({
+      title,
+      body: `<div class="field"><label for="promptInput">文件路径</label><input class="input" id="promptInput" placeholder="${esc(placeholder)}" autocomplete="off">${note ? `<div class="hint">${esc(note)}</div>` : ''}</div>`,
+      actions: [
+        { label: '取消', onClick: () => finish(null) },
+        {
+          label: '取回',
+          primary: true,
+          onClick: () => {
+            const value = (document.getElementById('promptInput')?.value || '').trim();
+            if (!value) { toast('请输入远端文件路径', 'warn'); return; }
+            finish(value);
+          },
+        },
+      ],
+    });
+    setTimeout(() => {
+      const input = document.getElementById('promptInput');
+      if (!input) return;
+      input.focus();
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          document.querySelector('[data-info-index="1"]')?.click();
+        }
+      });
+    }, 40);
+  });
 }
 function openOfflineModal(device) {
   openInfoModal({
@@ -1819,10 +2050,13 @@ function handleCommandAction(action) {
 function openSession(deviceId) {
   const device = deviceById(deviceId);
   if (!device) return;
+  // 角色只属于本次「添加设备→连接」流程；任何提前返回（离线/锁屏/取消）都要清掉
+  const pendingRole = state.pendingRole;
+  state.pendingRole = null;
   if (device.status === 'offline') { openOfflineModal(device); return; }
   if (!device.versionOk) { openVersionModal(device); return; }
   if (device.status === 'paused') { openInfoModal({ title: '这台电脑已暂停远程访问', sub: device.name, body: '<p style="font-size:11.5px;color:var(--ink-2)">员工在工位端暂停了远程访问。请恢复后再连接。</p>', actions: [{ label: '关闭', primary: true, onClick: closeModal }] }); return; }
-  if (device.real) { openRealSession(device); return; }
+  if (device.real) { state.pendingRole = pendingRole; openRealSession(device); return; }
   if (device.status === 'locked' && !device.permissions.unattended) { openUnattendedModal(device); return; }
   if (device.status === 'session' && device.sessionHolder) { openBusyModal(device); return; }
   closeMenu(); closeCommand(); closeModal(); closeDrawer();
@@ -1854,6 +2088,9 @@ function openSession(deviceId) {
   renderSession();
 }
 async function openRealSession(device) {
+  // 角色只在这次连接生效；取消配对码时也要清掉，避免下一次连接沿用上次的“管理员”
+  const role = state.pendingRole || 'owner';
+  state.pendingRole = null;
   let code = '';
   let remembered = false;
   try {
@@ -1880,7 +2117,8 @@ async function openRealSession(device) {
     peerId: device.peerId,
     self: !!device.self,
     quality: 'auto',
-    qualityLabel: '自动 · 1080p',
+    qualityLabel: '自动 · 高清',
+    zoom: 'fit',
     display: 1,
     clipboard: !!device.permissions.clipboard,
     files: [],
@@ -1908,8 +2146,6 @@ async function openRealSession(device) {
   }, 1000);
   renderSession();
   toast('正在建立加密直连…', 'info');
-  const role = state.pendingRole || 'owner';
-  state.pendingRole = null;
   const complete = async () => {
     if (!state.session) return;
     state.session.connected = true;
@@ -1985,6 +2221,7 @@ function closeSession(reason = '用户结束') {
     const end = new Date();
     const fmt = (d) => d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     SESSION_HISTORY.unshift({ id: `s-${Date.now()}`, date: `今天 ${fmt(start)}–${fmt(end)}`, deviceId: state.session.deviceId, duration: formatDuration(state.session.duration), quality: state.session.qualityLabel.replace('自动 · ', '').replace('手动 · ', ''), latency: state.session.real ? 'LAN' : '18ms', result: reason === '会话已被接管' ? '已接管' : '成功', reason });
+    if (SESSION_HISTORY.length > 200) SESSION_HISTORY.length = 200;
     try {
       const persist = SESSION_HISTORY.filter((x) => deviceById(x.deviceId) && !deviceById(x.deviceId).demo).slice(0, 200);
       localStorage.setItem('ns-session-history', JSON.stringify(persist));
@@ -1992,12 +2229,18 @@ function closeSession(reason = '用户结束') {
   }
   const name = device?.name || '设备';
   if (state.session.real) {
+    releaseRemoteInput();
     try { window.workspace.remote.disconnect(); } catch {}
   }
   state.session = null;
   state.lastFrame = null;
   state.frameRect = null;
   document.getElementById('sessionRoot').innerHTML = '';
+  if (state.windowFullscreen) {
+    state.windowFullscreen = false;
+    state.chromeVisible = false;
+    window.workspace.window('exit-fullscreen').catch(() => {});
+  }
   toast(`会话已结束 · ${name}`, reason === '会话已被接管' ? 'warn' : 'success');
   render();
 }
@@ -2009,14 +2252,17 @@ function renderSession() {
   const s = state.session;
   const root = document.getElementById('sessionRoot');
   if (!s) { root.innerHTML = ''; return; }
+  if (s.real) releaseRemoteButtons();
   const device = deviceById(s.deviceId);
   if (!device) { closeSession(); return; }
   const locked = !s.real && s.locked && !s.unlocked;
   const admin = device.relation === 'managed' && !s.real;
   const grantMinutes = s.grant?.expiresAt ? Math.max(0, Math.ceil((s.grant.expiresAt - Date.now()) / 60000)) : null;
   const grantLabel = grantMinutes === null ? '' : grantMinutes >= 60 ? `${Math.ceil(grantMinutes / 60)} 小时` : `${grantMinutes} 分钟`;
+  const qualityShort = s.quality === '4k' ? '4K' : s.quality === '2k' ? '2K' : s.quality === '1080' ? '1080p' : s.quality === '720' ? '720p' : '自动';
+  const captureLabel = `${s.capture === 'gdi' ? 'GDI' : 'JPEG'} · ${s.captureWidth ? `${s.captureWidth}×${s.captureHeight}` : 'JPEG'}`;
   root.innerHTML = `
-    <div class="session-shell">
+    <div class="session-shell${state.windowFullscreen ? ' fullscreen' : ''}${state.windowFullscreen && state.chromeVisible ? ' chrome-visible' : ''}">
       <div class="session-top">
         <div class="session-device">
           <span class="s-ico">${icon(locked ? 'lock' : 'monitor', 13)}</span>
@@ -2028,36 +2274,37 @@ function renderSession() {
         </div>
         <div class="session-hud">
           ${s.real
-            ? `<span class="hud-item"><span class="hud-dot"></span>LAN</span><span class="hud-item" id="hudRtt">${s.rtt === null || s.rtt === undefined ? '— ms' : `${s.rtt} ms`}</span><span class="hud-item" id="hudFps">${s.fps ? `${s.fps} fps` : '— fps'}</span><span class="hud-item" id="hudCapture">${s.capture === 'gdi' ? 'GDI · JPEG' : 'JPEG'}</span><span class="hud-item">${esc(s.qualityLabel)}</span>`
+            ? `<span class="hud-item"><span class="hud-dot"></span>LAN</span><span class="hud-item" id="hudRtt">${s.rtt === null || s.rtt === undefined ? '— ms' : `${s.rtt} ms`}</span><span class="hud-item" id="hudFps">${s.fps ? `${s.fps} fps` : '— fps'}</span><span class="hud-item" id="hudCapture">${captureLabel}</span><span class="hud-item">${esc(s.qualityLabel)}</span>`
             : `<span class="hud-item ${s.banner?.type === 'warn' ? 'warn' : ''}"><span class="hud-dot" style="${s.banner?.type === 'warn' ? 'background:#fbbf24' : ''}"></span>18 ms</span><span class="hud-item">60 fps</span><span class="hud-item">7.2 Mbps</span><span class="hud-item">${esc(s.qualityLabel)}</span>`}
         </div>
         <span class="spacer"></span>
         <div class="session-actions">
           <button class="session-btn" data-session-action="display-menu" title="切换显示器">${icon('display', 14)} <span>屏幕 ${s.display}</span></button>
-          <button class="session-btn" data-session-action="quality-menu" title="画质">${icon('activity', 14)} <span>画质</span></button>
-          <button class="session-btn ${s.clipboard ? 'active' : ''}" data-session-action="clipboard" title="剪贴板">${icon('clipboard', 14)} <span>剪贴板</span></button>
-          <button class="session-btn" data-session-action="files" title="文件传输">${icon('folder', 14)} <span>文件</span></button>
+          <button class="session-btn" data-session-action="quality-menu" title="画质：${esc(s.qualityLabel)}">${icon('activity', 14)} <span>${qualityShort}</span></button>
+          <button class="session-btn ${s.clipboard ? 'active' : ''}" data-session-action="clipboard" title="发送剪贴板">${icon('clipboard', 14)}</button>
+          <button class="session-btn" data-session-action="files" title="文件传输 · 也可直接拖入窗口">${icon('folder', 14)}</button>
+          <button class="session-btn ${state.windowFullscreen ? 'active' : ''}" data-session-action="fullscreen" title="${state.windowFullscreen ? '退出全屏' : '全屏'}">${icon(state.windowFullscreen ? 'compress' : 'expand', 14)}</button>
           <button class="session-btn" data-session-action="more" title="更多">${icon('more', 14)}</button>
           <button class="session-btn danger" data-session-action="disconnect" title="断开">${icon('power', 14)} <span>断开</span></button>
         </div>
       </div>
       <div class="session-canvas">
         ${s.real
-          ? `<div class="remote-canvas-wrap"><canvas id="remoteCanvas" class="remote-canvas" tabindex="0" aria-label="远程桌面画面"></canvas>${s.connected ? '' : '<div class="remote-connecting">正在获取画面…</div>'}</div>`
+          ? `<div class="remote-canvas-wrap"><canvas id="remoteCanvas" class="remote-canvas" tabindex="0" aria-label="远程桌面画面"></canvas><div class="remote-cursor" id="remoteCursor" hidden>${icon('cursorArrow', 20)}</div>${s.connected ? '' : '<div class="remote-connecting">正在获取画面…</div>'}</div>`
           : locked ? lockScreenHtml(device) : `<div class="remote-desktop" style="${s.reconnecting ? 'opacity:.45;filter:blur(1px)' : ''}">${fakeDesktopHtml(device, s)}</div>`}
         ${bannerHtml(s)}
         ${locked ? unlockPanelHtml(device, s) : ''}
+        <div class="session-drop" id="sessionDrop" hidden><div class="session-drop-box">${icon('upload', 26)}<b>松开即可发送到远端</b><span>文件保存到对方的「下载/NearSend」</span></div></div>
         ${s.drawer ? sessionDrawerHtml(device, s) : ''}
-        <div class="session-hint">${s.real ? '键盘输入直送远端 · Ctrl+Alt+Shift+E 结束会话 · 切回本机请先结束会话' : '键盘已捕获 · Ctrl+Alt+Shift+K 释放 · 右键发送到远端'}</div>
+        <div class="session-hint">${s.real ? '拖入文件直接发送 · Ctrl+Alt+Shift+F 全屏 · Ctrl+Alt+Shift+E 结束会话' : '键盘已捕获 · Ctrl+Alt+Shift+K 释放 · 右键发送到远端'}</div>
       </div>
       <div class="session-bottom">
         <span class="ok">● 已连接</span>
         <span data-session-duration>${formatDuration(s.duration)}</span>
         <span>${esc(s.qualityLabel)}</span>
-        <span>${s.real ? '局域网直连' : '延迟 18ms'}</span>
-        <span>${s.real ? 'WS · JPEG' : '丢包 0.2%'}</span>
+        <span>${s.real ? '局域网直连' : '演示会话'}</span>
         <span class="spacer"></span>
-        <span>${s.real ? '局域网直连 · 本机审计' : 'P2P 直连 · TLS 1.3 · 本机审计'}</span>
+        <span>${s.real ? '拖入文件即可发送 · 保护隐私请及时结束会话' : 'P2P 直连 · TLS 1.3 · 本机审计'}</span>
       </div>
     </div>`;
   hydrateIcons(root);
@@ -2114,15 +2361,21 @@ function fakeDesktopHtml(device, s) {
     </div>
     <div class="desktop-taskbar"><div class="taskbar-start">${icon('grid', 16)}</div><div class="taskbar-app active">${icon('file', 15)}</div><div class="taskbar-app">${icon('folder', 15)}</div><div class="taskbar-tray">${icon('wifi', 13)}<span>${esc(display.label)} · ${esc(display.res)}</span><span>${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span></div></div>`;
 }
+function fileRowHtml(f) {
+  const numSize = typeof f.size === 'number' ? f.size : 0;
+  const pct = f.done ? 100 : numSize ? Math.min(99, Math.round(((f.received || 0) / numSize) * 100)) : (f.progress || 0);
+  const dir = f.direction === 'in' ? '接收' : '发送';
+  return `<div class="file-row${f.path ? ' draggable-file' : ''}" data-file-id="${esc(f.id || '')}"${f.path ? ` draggable="true" data-file-path="${esc(f.path)}" title="拖到本机文件夹可直接保存"` : ''}><div class="file-ico">${icon('file', 14)}</div><div class="file-main"><b>${esc(f.name)}</b><span>${dir} · ${esc(typeof f.size === 'number' ? formatBytes(f.size) : f.size)} · ${f.error ? (String(f.error).includes('取消') ? '已取消' : '失败') : f.done || pct >= 100 ? '已完成' : `传输中 ${pct}%`}${f.path ? ' · 可拖出保存' : ''}</span><div class="file-progress"><i style="width:${pct}%"></i></div></div>${f.path ? `<button class="icon-btn" data-session-action="file-save" data-file-path="${esc(f.path)}" title="另存为" aria-label="另存为">${icon('download', 14)}</button>` : ''}${f.done || f.error ? '' : `<button class="icon-btn" data-session-action="file-cancel" data-file-id="${esc(f.id || '')}" aria-label="取消">${icon('x', 14)}</button>`}</div>`;
+}
 function sessionDrawerHtml(device, s) {
   if (s.drawer === 'files') {
     const allowed = device.permissions.file;
     return `<aside class="session-drawer"><div class="session-drawer-head"><b>文件传输</b><button class="icon-btn" data-session-action="drawer-close" aria-label="关闭">${icon('x', 15)}</button></div><div class="session-drawer-body">
-      ${allowed ? `<div class="dropzone" id="dropzone" data-session-action="pick-file" style="cursor:pointer">${icon('upload', 20)}<div>选择本地文件发送到 ${esc(device.name)}</div><div style="margin-top:3px;font-size:9px">文件写入被控端下载目录 NearSend；传输记录写入审计</div></div>` : `<div class="perm-summary" style="background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.35);color:#fde68a">当前授权未开启文件传输。管理员默认关闭；请让设备所有者授权。</div>`}
+      ${allowed ? `<div class="dropzone" id="dropzone" data-session-action="pick-file" style="cursor:pointer">${icon('upload', 20)}<div>把文件拖到这里，或点击选择发送到 ${esc(device.name)}</div><div style="margin-top:3px;font-size:9px">发送到被控端「下载/NearSend」；也可直接把整个文件拖进远程画面</div></div>` : `<div class="perm-summary" style="background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.35);color:#fde68a">当前授权未开启文件传输。管理员默认关闭；请让设备所有者授权。</div>`}
       <div class="section-title" style="margin-top:13px;font-size:11px">传输队列</div>
-      ${s.files.length ? s.files.map((f) => { const pct = f.done ? 100 : f.size ? Math.min(99, Math.round(((f.received || 0) / f.size) * 100)) : (f.progress || 0); return `<div class="file-row"><div class="file-ico">${icon('file', 14)}</div><div class="file-main"><b>${esc(f.name)}</b><span>${esc(f.size)} · ${f.error ? '失败' : f.done || pct >= 100 ? '已完成' : `传输中 ${pct}%`}</span><div class="file-progress"><i style="width:${pct}%"></i></div></div><button class="icon-btn" data-session-action="file-cancel" aria-label="取消">${icon('x', 14)}</button></div>`; }).join('') : `<div class="card-note" style="color:#8e9cb0">还没有文件。点击上方区域选择文件。</div>`}
-      <div style="margin-top:10px;display:flex;gap:6px"><button class="btn btn-sm" data-session-action="pick-file">${icon('upload', 13)} 选择文件</button><button class="btn btn-sm" data-session-action="file-open">${icon('folder', 13)} 打开下载目录</button></div>
-      <div class="card-note" style="color:#8e9cb0;margin-top:12px">只发送到被控端；不传输文件夹/系统文件。</div>
+      ${s.files.length ? s.files.map(fileRowHtml).join('') : `<div class="card-note" style="color:#8e9cb0">还没有文件。点击上方区域选择文件。</div>`}
+      <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm" data-session-action="pick-file">${icon('upload', 13)} 选择文件</button><button class="btn btn-sm" data-session-action="get-remote-file">${icon('download', 13)} 从远端取回</button><button class="btn btn-sm" data-session-action="file-open">${icon('folder', 13)} 打开下载目录</button></div>
+      <div class="card-note" style="color:#8e9cb0;margin-top:12px">本机 → 被控端：拖入或选择文件。被控端发来的文件收完后，可把文件行直接拖到本机资源管理器保存。</div>
     </div></aside>`;
   }
   const startLabel = new Date(s.startAt || Date.now()).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
@@ -2136,48 +2389,149 @@ function sessionDrawerHtml(device, s) {
 }
 function bindDropzone() {
   const dz = document.getElementById('dropzone');
-  if (!dz) return;
-  dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('drag'); });
-  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
-  dz.addEventListener('drop', async (e) => {
-    e.preventDefault(); dz.classList.remove('drag');
-    const files = [...(e.dataTransfer?.files || [])];
-    if (!files.length || !state.session) return;
-    let sent = 0;
-    for (const f of files) {
-      const p = f.path || f.filePath;
-      if (!p) continue;
-      const meta = await window.workspace.remote.sendFilePath(p);
-      if (meta) { state.session.files.push({ ...meta, received: 0, progress: 0 }); sent += 1; }
+  if (dz) {
+    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('drag'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+    dz.addEventListener('drop', async (e) => {
+      e.preventDefault(); e.stopPropagation(); dz.classList.remove('drag');
+      const files = [...(e.dataTransfer?.files || [])];
+      if (!files.length || !state.session) return;
+      const paths = files.map((f) => f.path || f.filePath).filter(Boolean);
+      if (paths.length) await sendLocalPathsToRemote(paths);
+      else toast('无法读取文件路径；请用“选择文件”发送', 'warn');
+    });
+  }
+}
+async function sendLocalPathsToRemote(paths) {
+  const s = state.session;
+  if (!s || !s.real || !Array.isArray(paths) || !paths.length) return 0;
+  let sent = 0;
+  for (const p of paths) {
+    const meta = await window.workspace.remote.sendFilePath(p);
+    if (!state.session) return sent;
+    if (!meta) continue;
+    if (!s.files.some((f) => f.id === meta.id)) {
+      s.files.push({ ...meta, received: 0, progress: 0 });
     }
-    if (sent) { toast(`正在发送 ${sent} 个文件`, 'success'); renderSession(); }
+    sent += 1;
+  }
+  if (sent) {
+    s.drawer = 'files';
+    renderSession();
+    toast(`正在发送 ${sent} 个文件到远端`, 'success');
+  } else {
+    toast('文件无法读取，或当前没有可用的远程会话', 'warn');
+  }
+  return sent;
+}
+function bindSessionDrop() {
+  const root = document.getElementById('sessionRoot');
+  if (!root) return;
+  let depth = 0;
+  const hasFiles = (e) => !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'));
+  const overlay = () => document.getElementById('sessionDrop');
+  const hide = () => {
+    depth = 0;
+    const el = overlay();
+    if (el) el.hidden = true;
+  };
+  root.addEventListener('dragenter', (e) => {
+    if (!state.session?.real || !hasFiles(e) || e.target.closest('#dropzone')) return;
+    e.preventDefault();
+    depth += 1;
+    const el = overlay();
+    if (el) el.hidden = false;
+  });
+  root.addEventListener('dragover', (e) => {
+    const el = overlay();
+    if (!el || el.hidden) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  root.addEventListener('dragleave', (e) => {
+    const el = overlay();
+    if (!el || el.hidden) return;
+    depth = Math.max(0, depth - 1);
+    if (!depth) hide();
+  });
+  root.addEventListener('drop', async (e) => {
+    const el = overlay();
+    if (!el || el.hidden || e.target.closest('#dropzone')) return;
+    e.preventDefault();
+    hide();
+    const files = [...(e.dataTransfer?.files || [])];
+    const paths = files.map((f) => f.path || f.filePath).filter(Boolean);
+    if (paths.length) await sendLocalPathsToRemote(paths);
     else toast('无法读取文件路径；请用“选择文件”发送', 'warn');
   });
+  window.addEventListener('dragend', hide);
+  window.addEventListener('drop', hide);
 }
 function formatBytes(n) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
-async function sessionAction(action) {
+function syncFullscreenChrome() {
+  const shell = document.querySelector('.session-shell');
+  if (!state.windowFullscreen) state.chromeVisible = false;
+  if (shell) {
+    shell.classList.toggle('fullscreen', !!state.windowFullscreen);
+    shell.classList.toggle('chrome-visible', !!state.windowFullscreen && !!state.chromeVisible);
+  }
+  const btn = document.querySelector('[data-session-action="fullscreen"]');
+  if (btn) {
+    btn.classList.toggle('active', !!state.windowFullscreen);
+    btn.innerHTML = icon(state.windowFullscreen ? 'compress' : 'expand', 14);
+    btn.title = state.windowFullscreen ? '退出全屏' : '全屏';
+  }
+}
+async function sessionAction(action, el) {
   const s = state.session;
   if (!s) return;
   const device = deviceById(s.deviceId);
   if (!device) return;
+  if (action === 'fullscreen') {
+    const on = await window.workspace.window('fullscreen').catch(() => false);
+    state.windowFullscreen = !!on;
+    syncFullscreenChrome();
+    return;
+  }
   if (action === 'disconnect' || action === 'close-session') { closeSession('用户结束'); return; }
   if (s.real && action === 'quality-menu') {
     const anchor = document.querySelector('[data-session-action="quality-menu"]');
-    const opts = [['auto', '自动'], ['2k', '2K 2560×1440'], ['1080', '1080p'], ['720', '720p']];
-    showMenu(anchor, opts.map(([key, text]) => ({
-      text, icon: 'activity',
-      action: () => {
-        window.workspace.remote.setQuality(key);
-        s.quality = key;
-        s.qualityLabel = key === 'auto' ? '自动 · 1080p' : key === '2k' ? '2K · 2560×1440' : key === '1080' ? '1080p' : '720p';
-        toast(`画质已切换为 ${s.qualityLabel}`, 'success');
-        renderSession();
-      },
-    })));
+    const opts = [
+      ['auto', '自动 · 高清（推荐）'],
+      ['4k', '原画 4K · 3840×2160'],
+      ['2k', '2K · 2560×1440'],
+      ['1080', '1080p · 1920×1080'],
+      ['720', '720p · 1280×720（省流量）'],
+    ];
+    const labels = {
+      auto: '自动 · 高清', '4k': '原画 · 4K', '2k': '2K · 2560×1440',
+      '1080': '1080p · 1920×1080', '720': '720p · 1280×720',
+    };
+    const setZoom = (mode) => {
+      s.zoom = mode;
+      state.frameRect = null;
+      if (state.lastFrame) drawRemoteFrame(state.lastFrame);
+      toast(mode === 'actual' ? '已切换为原始像素显示（更清晰）' : '已切换为适应窗口', 'success');
+    };
+    showMenu(anchor, [
+      ...opts.map(([key, text]) => ({
+        text, icon: s.quality === key ? 'check' : 'activity',
+        action: () => {
+          window.workspace.remote.setQuality(key);
+          s.quality = key;
+          s.qualityLabel = labels[key];
+          toast(`画质已切换为 ${s.qualityLabel}`, 'success');
+          renderSession();
+        },
+      })),
+      { label: '显示比例' },
+      { text: '适应窗口（默认）', icon: s.zoom === 'actual' ? 'square' : 'check', action: () => setZoom('fit') },
+      { text: '原始像素 · 文字更清晰', icon: s.zoom === 'actual' ? 'check' : 'square', action: () => setZoom('actual') },
+    ]);
     return;
   }
   if (s.real && action === 'display-menu') {
@@ -2215,7 +2569,9 @@ async function sessionAction(action) {
   if (s.real && action === 'pick-file') {
     const meta = await window.workspace.remote.pickFile();
     if (meta) {
-      s.files.push({ ...meta, received: 0, progress: 0 });
+      if (!s.files.some((f) => f.id === meta.id)) {
+        s.files.push({ ...meta, received: 0, progress: 0 });
+      }
       s.drawer = 'files';
       renderSession();
       toast(`正在发送 ${meta.name}`, 'success');
@@ -2298,8 +2654,45 @@ async function sessionAction(action) {
     s.files.push({ name: `演示文件-${s.files.length + 1}.pdf`, size: '2.4 MB', progress: 34 });
     toast('已添加示例文件', 'success'); renderSession(); return;
   }
-  if (action === 'file-cancel') { s.files.pop(); renderSession(); return; }
+  if (action === 'file-cancel') {
+    const id = el?.dataset.fileId;
+    if (s.real && id) {
+      const ok = await window.workspace.remote.cancelFile(id).catch(() => false);
+      const f = s.files.find((x) => x.id === id);
+      if (f) {
+        f.done = true;
+        f.error = ok ? '已取消' : (f.error || '已结束');
+      }
+      renderSession();
+      toast(ok ? '已取消传输' : '该传输已结束', ok ? 'warn' : 'info');
+      return;
+    }
+    s.files.pop();
+    renderSession();
+    return;
+  }
   if (action === 'file-open') { window.workspace.openDownloads(); return; }
+  if (action === 'file-save') {
+    const filePath = el?.dataset.filePath || '';
+    if (!filePath) return;
+    const saved = await window.workspace.remote.saveFile(filePath).catch(() => null);
+    if (saved) toast(`已保存到 ${saved}`, 'success');
+    return;
+  }
+  if (s.real && action === 'get-remote-file') {
+    if (!device.permissions.file) { toast('当前授权未开启文件传输', 'warn'); return; }
+    const remotePath = await openPrompt('从远端取回文件', 'C:\\Users\\Administrator\\Desktop\\报表.xlsx', '填写被控端电脑上的文件绝对路径；取回后可在文件列表里拖到本机任意文件夹').catch(() => null);
+    if (!remotePath) return;
+    const ok = await window.workspace.remote.getFile(remotePath).catch(() => false);
+    if (ok) {
+      toast('已发送取回请求，接收完成后可拖到本机文件夹', 'success');
+      s.drawer = 'files';
+      renderSession();
+    } else {
+      toast('无法取回：请确认远端路径存在且文件传输权限已开启', 'danger');
+    }
+    return;
+  }
   if (action === 'copy-diag') { const d = deviceById(s.deviceId); copyText(`SESSION device=${d?.name || ''} peer=${d?.ip || ''} quality=${s.qualityLabel} capture=${s.capture || 'n/a'} transport=ws-jpeg`, '诊断信息已复制'); return; }
   if (action === 'dismiss-banner') { s.banner = null; renderSession(); return; }
   if (action === 'degraded') {
@@ -2618,17 +3011,81 @@ function pointerNorm(e, canvas) {
   const y = (e.clientY - r.top - fr.y) / Math.max(1, fr.h);
   return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
 }
+function insideRemoteFrame(e, canvas) {
+  const r = canvas.getBoundingClientRect();
+  const fr = state.frameRect;
+  if (!fr) return false;
+  const x = e.clientX - r.left;
+  const y = e.clientY - r.top;
+  return x >= fr.x && y >= fr.y && x <= fr.x + fr.w && y <= fr.y + fr.h;
+}
+function releaseRemoteButtons() {
+  if (!state.session?.real) return;
+  if (state.moveRaf) { cancelAnimationFrame(state.moveRaf); state.moveRaf = 0; }
+  state.pendingMove = null;
+  ['left', 'right', 'middle'].forEach((button) => {
+    window.workspace.remote.input({ kind: 'mouse', action: 'up', button });
+  });
+}
+function releaseRemoteKeys() {
+  if (!state.session?.real) return;
+  for (const vk of pressedRemoteKeys) {
+    window.workspace.remote.input({ kind: 'key', action: 'up', vk });
+  }
+  pressedRemoteKeys.clear();
+}
+function releaseRemoteInput() {
+  releaseRemoteButtons();
+  releaseRemoteKeys();
+}
+function updateRemoteCursor(e, canvas) {
+  const cur = document.getElementById('remoteCursor');
+  if (!cur) return;
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const y = e.clientY - r.top;
+  const fr = state.frameRect;
+  if (!fr || x < fr.x || y < fr.y || x > fr.x + fr.w || y > fr.y + fr.h) {
+    cur.hidden = true;
+    canvas.style.cursor = 'default';
+    return;
+  }
+  cur.hidden = false;
+  canvas.style.cursor = 'none';
+  cur.style.transform = `translate3d(${Math.round(x - 4)}px, ${Math.round(y - 2)}px, 0)`;
+}
+function sendRemoteMove(p) {
+  window.workspace.remote.input({ kind: 'mouse', action: 'move', x: p.x, y: p.y, buttons: p.buttons });
+}
 function bindRealCanvas() {
   const canvas = document.getElementById('remoteCanvas');
   if (!canvas) return;
   canvas.focus();
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas.addEventListener('pointerenter', (e) => updateRemoteCursor(e, canvas));
   canvas.addEventListener('pointermove', (e) => {
+    updateRemoteCursor(e, canvas);
+    if (!insideRemoteFrame(e, canvas)) return;
     const p = pointerNorm(e, canvas);
-    window.workspace.remote.input({ kind: 'mouse', action: 'move', x: p.x, y: p.y, buttons: e.buttons });
+    p.buttons = e.buttons;
+    // 每帧最多发一次移动，避免 1000Hz 鼠标把输入队列塞满导致「慢半拍」
+    state.pendingMove = p;
+    if (state.moveRaf) return;
+    state.moveRaf = requestAnimationFrame(() => {
+      state.moveRaf = 0;
+      const pending = state.pendingMove;
+      state.pendingMove = null;
+      if (pending) sendRemoteMove(pending);
+    });
   });
   canvas.addEventListener('pointerdown', (e) => {
     canvas.focus();
+    updateRemoteCursor(e, canvas);
+    if (!insideRemoteFrame(e, canvas)) return;
+    // 按下前先把最新位置补齐，保证落点和光标一致
+    if (state.moveRaf) { cancelAnimationFrame(state.moveRaf); state.moveRaf = 0; }
+    if (state.pendingMove) { sendRemoteMove(state.pendingMove); state.pendingMove = null; }
+    document.getElementById('remoteCursor')?.classList.add('down');
     try { canvas.setPointerCapture(e.pointerId); } catch {}
     const p = pointerNorm(e, canvas);
     window.workspace.remote.input({
@@ -2637,14 +3094,25 @@ function bindRealCanvas() {
     });
   });
   canvas.addEventListener('pointerup', (e) => {
+    if (state.moveRaf) { cancelAnimationFrame(state.moveRaf); state.moveRaf = 0; }
+    state.pendingMove = null;
+    document.getElementById('remoteCursor')?.classList.remove('down');
     const p = pointerNorm(e, canvas);
     window.workspace.remote.input({
       kind: 'mouse', action: 'up', button: e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left',
       x: p.x, y: p.y,
     });
   });
+  canvas.addEventListener('pointerleave', () => {
+    document.getElementById('remoteCursor')?.classList.remove('down');
+    const cur = document.getElementById('remoteCursor');
+    if (cur) cur.hidden = true;
+    if (state.moveRaf) { cancelAnimationFrame(state.moveRaf); state.moveRaf = 0; }
+    state.pendingMove = null;
+  });
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
+    if (!insideRemoteFrame(e, canvas)) return;
     window.workspace.remote.input({ kind: 'mouse', action: 'wheel', delta: e.deltaY > 0 ? -120 : 120 });
   }, { passive: false });
 }
@@ -2652,30 +3120,47 @@ function drawRemoteFrame(frame) {
   if (!frame || !frame.data) return;
   state.lastFrame = frame;
   if (state.session && frame.capture) state.session.capture = frame.capture;
+  if (state.session && frame.width && frame.height) {
+    state.session.captureWidth = frame.width;
+    state.session.captureHeight = frame.height;
+  }
   if (state.session) state.session.frameCount = (state.session.frameCount || 0) + 1;
   const hudCapture = document.getElementById('hudCapture');
-  if (hudCapture && frame.capture === 'gdi') hudCapture.textContent = 'GDI · JPEG';
+  if (hudCapture) {
+    const mode = frame.capture === 'gdi' ? 'GDI' : 'JPEG';
+    hudCapture.textContent = frame.width && frame.height ? `${mode} · ${frame.width}×${frame.height}` : `${mode} · JPEG`;
+  }
   const canvas = document.getElementById('remoteCanvas');
   if (!canvas) return;
   const img = new Image();
   img.onload = () => {
+    canvas.closest('.remote-canvas-wrap')?.classList.add('live');
     const cw = canvas.clientWidth || 1280;
     const ch = canvas.clientHeight || 720;
-    if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
+    const dpr = window.devicePixelRatio || 1;
+    const bw = Math.round(cw * dpr);
+    const bh = Math.round(ch * dpr);
+    if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh; }
     const ctx = canvas.getContext('2d');
+    // 按设备像素渲染，避免 Windows 125%/150% 缩放下二次插值把文字糊掉
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, cw, ch);
-    const scale = Math.min(cw / img.width, ch / img.height);
+    // “原始像素”按设备像素 1:1 显示，不做放大插值，文字最清晰
+    const fitScale = Math.min(cw / img.width, ch / img.height);
+    const scale = state.session?.zoom === 'actual' ? Math.min(fitScale, 1 / dpr) : fitScale;
     const w = img.width * scale, h = img.height * scale;
     state.frameRect = { x: (cw - w) / 2, y: (ch - h) / 2, w, h };
     ctx.drawImage(img, state.frameRect.x, state.frameRect.y, w, h);
     const sess = state.session;
     if (sess?.recording && sess.recCanvas && sess.recCtx) {
-      if (sess.recCanvas.width !== cw || sess.recCanvas.height !== ch) {
-        sess.recCanvas.width = cw;
-        sess.recCanvas.height = ch;
+      if (sess.recCanvas.width !== bw || sess.recCanvas.height !== bh) {
+        sess.recCanvas.width = bw;
+        sess.recCanvas.height = bh;
       }
-      sess.recCtx.drawImage(canvas, 0, 0, cw, ch);
+      sess.recCtx.drawImage(canvas, 0, 0, bw, bh);
     }
   };
   img.src = `data:image/jpeg;base64,${frame.data}`;
@@ -2745,6 +3230,8 @@ function sendRemoteKey(e, down) {
   const vk = vkOf(e);
   if (!vk) return false;
   window.workspace.remote.input({ kind: 'key', action: down ? 'down' : 'up', vk });
+  if (down) pressedRemoteKeys.add(vk);
+  else pressedRemoteKeys.delete(vk);
   return true;
 }
 
@@ -2752,12 +3239,34 @@ function bindSession() {
   const root = document.getElementById('sessionRoot');
   root.addEventListener('click', (e) => {
     const act = e.target.closest('[data-session-action]');
-    if (act) sessionAction(act.dataset.sessionAction);
+    if (act) sessionAction(act.dataset.sessionAction, act);
   });
   root.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && e.target.id === 'unlockPassword') { e.preventDefault(); sessionAction('unlock'); }
     if (e.key === 'Escape') { closeMenu(); }
   });
+  // 事件委托：文件行会被就地更新，不能只给当前行绑 dragstart
+  root.addEventListener('dragstart', (e) => {
+    const row = e.target.closest?.('.file-row[data-file-path]');
+    if (!row) return;
+    e.preventDefault();
+    window.workspace.remote.dragFile(row.dataset.filePath);
+  });
+  bindSessionDrop();
+  // 全屏时默认隐藏上下工具条；鼠标贴近屏幕上/下边缘再浮出
+  root.addEventListener('pointermove', (e) => {
+    if (!state.windowFullscreen || state.menuEl) return;
+    const shell = root.querySelector('.session-shell');
+    if (!shell) return;
+    const show = e.clientY <= 56 || e.clientY >= window.innerHeight - 10;
+    state.chromeVisible = show;
+    shell.classList.toggle('chrome-visible', show);
+  }, { passive: true });
+  root.addEventListener('pointerleave', () => {
+    state.chromeVisible = false;
+    root.querySelector('.session-shell')?.classList.remove('chrome-visible');
+  });
+  window.addEventListener('blur', releaseRemoteInput);
 }
 
 /* ---------- main / shell bindings ---------- */
@@ -2800,7 +3309,16 @@ function handleMainClick(e) {
     const a = act.dataset.action;
     const device = deviceById(act.dataset.deviceId || state.selectedDeviceId);
     if (a === 'add-device') { state.addRole = 'owner'; openAddDevice(); }
-    else if (a === 'refresh') toast('状态已刷新 · 10:32', 'success');
+    else if (a === 'refresh') {
+      Promise.all([refreshPeers(), window.workspace.remote.state()])
+        .then(([, rs]) => {
+          state.remote = rs;
+          mergeRemoteState(rs);
+          render();
+          toast('状态已刷新', 'success');
+        })
+        .catch(() => toast('刷新失败', 'danger'));
+    }
     else if (a === 'refresh-grants') {
       window.workspace.remote.state().then((rs) => { state.remote = rs; mergeRemoteState(rs); renderGrants(); toast('授权已刷新', 'success'); }).catch(() => toast('刷新失败', 'danger'));
     }
@@ -2901,9 +3419,17 @@ function handleMainClick(e) {
     }
     else if (a === 'open-agent') toggleAgent(true);
     else if (a === 'open-team-chat') window.workspace.openChat();
-    else if (a === 'dm-team') { state.dmPeerId = null; renderMessages(); }
-    else if (a === 'dm-peer') { state.dmPeerId = act.dataset.peerId; renderMessages(); }
-    else if (a === 'dm-back') { state.dmPeerId = null; renderMessages(); }
+    else if (a === 'join-group') openJoinGroupModal();
+    else if (a === 'dm-team') { state.dmPeerId = null; renderMessages({ reset: true }); }
+    else if (a === 'dm-peer') {
+      state.dmPeerId = act.dataset.peerId;
+      state.incomingUnread = 0;
+      refreshUnreadBadge();
+      renderMessages({ focus: true, reset: true });
+    }
+    else if (a === 'dm-back') { state.dmPeerId = null; renderMessages({ reset: true }); }
+    else if (a === 'team-send') sendTeamMessage();
+    else if (a === 'copy-invite') copyGroupInvite();
     else if (a === 'dm-send') sendDM(act.dataset.peerId);
     else return;
     return;
@@ -2923,7 +3449,7 @@ async function runDiagnostics() {
   setTimeout(() => {
     state.diagRunning = false;
     state.diagDone = true;
-    renderDiagnostics();
+    if (state.view === 'diagnostics') renderDiagnostics();
     toast(state.diag?.helperExists ? '检查完成 · 输入注入可用' : '检查完成 · 输入组件缺失', state.diag?.helperExists ? 'success' : 'warn');
   }, 900);
 }
@@ -2967,7 +3493,7 @@ function handleSessionLocalShortcut(e) {
   else if (k === 'c') sessionAction('clipboard');
   else if (k === 't') sessionAction('files');
   else if (k === 'e') closeSession('用户结束');
-  else if (k === 'f') toast('全屏由窗口最大化控制（V1）', 'info');
+  else if (k === 'f') sessionAction('fullscreen');
   else return false;
   [16, 17, 18].forEach((vk) => window.workspace.remote.input({ kind: 'key', action: 'up', vk }));
   return true;
@@ -2981,6 +3507,8 @@ function bindShell() {
   document.getElementById('globalSearch')?.addEventListener('click', openCommand);
   document.addEventListener('keydown', (e) => {
     if (state.session?.real) {
+      if (e.key === 'Escape' && state.windowFullscreen) { e.preventDefault(); sessionAction('fullscreen'); return; }
+      if (e.key === 'F11') { e.preventDefault(); sessionAction('fullscreen'); return; }
       if (e.ctrlKey && e.altKey && e.shiftKey) {
         if (handleSessionLocalShortcut(e)) { e.preventDefault(); return; }
       }

@@ -616,7 +616,8 @@ async function openInvite() {
       applyUrl(currentUrl, currentQr);
     }
   }
-  $('inviteQr').src = currentQr || '';
+  if (currentQr) $('inviteQr').src = currentQr;
+  else $('inviteQr').removeAttribute('src');
   $('inviteUrl').textContent = currentUrl || '';
 }
 
@@ -1697,9 +1698,10 @@ function applyPin() {
 
 function applyUrl(url, qr) {
   if (url) currentUrl = url;
-  if (qr) {
-    currentQr = qr;
-    $('qrBig').src = qr;
+  if (qr !== undefined) {
+    currentQr = qr || '';
+    if (currentQr) $('qrBig').src = currentQr;
+    else $('qrBig').removeAttribute('src');
   }
   $('setUrl').textContent = hostOf(currentUrl) || '—';
   $('setUrl').title = currentUrl;
@@ -2009,7 +2011,7 @@ function onEvent(p) {
   switch (p.t) {
     case 'msg': {
       // 初始化期间排队重放 + 服务端历史可能已经包含同一条，避免重复
-      if (p.msg && byId.has(p.msg.id)) break;
+      if (!p.msg || byId.has(p.msg.id)) break;
       loaded.push(p.msg);
       if (p.msg.uid) setTyping(p.msg.uid, authorOf(p.msg).name, false);
       if (!isMine(p.msg) && p.msg.kind !== 'system') {
@@ -2030,6 +2032,7 @@ function onEvent(p) {
       break;
     case 'msg:delete':
       removeMessage(p.id);
+      if (replyTo && replyTo.id === p.id) clearReply();
       break;
     case 'clear':
       loaded = [];

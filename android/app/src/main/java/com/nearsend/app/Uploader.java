@@ -17,7 +17,7 @@ import java.nio.charset.StandardCharsets;
  */
 public final class Uploader {
 
-    public static final int CHUNK = 4 * 1024 * 1024;
+    public static final int CHUNK = 8 * 1024 * 1024;
 
     public interface Progress {
         void on(long sent, long total);
@@ -94,7 +94,9 @@ public final class Uploader {
             if (code != 200) throw new IOException("upload HTTP " + code);
             String text = read(c.getInputStream());
             JSONObject r = new JSONObject(text.isEmpty() ? "{}" : text);
-            return r.optLong("offset", offset + length);
+            long next = r.optLong("offset", offset + length);
+            if (next <= offset) throw new IOException("offset stalled");
+            return next;
         } finally {
             try {
                 if (in != null) in.close();
