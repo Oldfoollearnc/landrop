@@ -202,6 +202,7 @@ const pressedRemoteKeys = new Set();
 const state = {
   view: 'devices',
   selectedDeviceId: 'dev-1',
+  deviceDrawer: false,
   detailTab: 'overview',
   filter: 'all',
   search: '',
@@ -374,6 +375,8 @@ function refreshUnreadBadge() {
 }
 function setView(view) {
   state.view = view;
+  if (view !== 'devices') state.deviceDrawer = false;
+  document.getElementById('main')?.classList.remove('inspector-open');
   if (view === 'messages') {
     // 进入消息页就表示用户看到了私聊提醒；群聊未读仍由 chat.unread 维护
     state.incomingUnread = 0;
@@ -404,6 +407,57 @@ function render() {
 }
 
 /* ---------- devices view ---------- */
+function statusHeroHtml() {
+  const online = DEVICES.filter((d) => ['online', 'locked', 'session'].includes(d.status)).length;
+  const sessions = DEVICES.filter((d) => d.status === 'session').length;
+  const attention = DEVICES.filter((d) => d.status === 'offline' || !d.versionOk || d.expirySeconds === 0).length;
+  const recent = SESSION_HISTORY.length;
+  const ready = online > 0;
+  const stat = (value, label) => `<div class="hero-stat"><b>${value}</b><span>${label}</span></div>`;
+  return `<section class="status-hero${ready ? '' : ' idle'}">
+    <span class="hero-glow" aria-hidden="true"></span>
+    <div class="hero-copy">
+      <span class="hero-kicker"><i class="live-dot"></i>设备 · 局域网直连</span>
+      <h2>${ready ? '局域网已就绪' : '等待设备上线'}</h2>
+      <p>${ready
+        ? `${online} 台设备在线，${attention ? `${attention} 台需要处理` : '全部运行正常'}。连接只在本机与设备之间直连。`
+        : '在另一台电脑打开近传并开启「本机被控」，设备会自动出现在这里。'}</p>
+      <div class="hero-actions">
+        <button class="hero-btn hero-btn-ghost" data-action="refresh" title="刷新设备状态">${icon('refresh', 14)} 刷新</button>
+        <button class="hero-btn hero-btn-ghost" data-action="open-agent">${icon('laptop', 14)} 本机被控</button>
+        <button class="hero-btn hero-btn-solid" data-action="add-device">${icon('plus', 14)} 添加设备</button>
+      </div>
+    </div>
+    <div class="hero-stats">
+      ${stat(online, '在线设备')}${stat(sessions, '进行中会话')}${stat(attention, '需要处理')}${stat(recent, '最近会话')}
+    </div>
+  </section>`;
+}
+
+function devicePageHeadHtml() {
+  const online = DEVICES.filter((d) => ['online', 'locked', 'session'].includes(d.status)).length;
+  const attention = DEVICES.filter((d) => d.status === 'offline' || !d.versionOk || d.expirySeconds === 0).length;
+  return `<div class="page-head device-page-head">
+    <div class="page-title">
+      <span class="eyebrow">LOCAL NETWORK / DEVICES</span>
+      <h1>设备</h1>
+      <p>${online} 台在线${attention ? ` · ${attention} 台需要处理` : ' · 全部运行正常'} · 端到端直连</p>
+    </div>
+    <div class="page-actions">
+      <button class="btn btn-ghost" data-action="refresh">刷新</button>
+      <button class="btn btn-ghost" data-action="open-agent">本机被控</button>
+      <button class="btn btn-primary" data-action="add-device">添加设备</button>
+    </div>
+  </div>`;
+}
+
+function deviceDrawerHtml(device) {
+  return `<aside class="device-inspector" role="dialog" aria-label="设备详情">
+    <div class="inspector-bar"><b>设备详情</b><button class="icon-btn" type="button" data-action="close-device-drawer" aria-label="关闭">${icon('x', 15)}</button></div>
+    <div class="inspector-body">${detailHtml(device)}</div>
+  </aside>`;
+}
+
 function renderDevices() {
   const main = document.getElementById('main');
   const oldSearch = document.getElementById('deviceSearch');
@@ -413,59 +467,24 @@ function renderDevices() {
   const device = deviceById(state.selectedDeviceId) || DEVICES[0];
   if (!device) {
     state.selectedDeviceId = null;
+    state.deviceDrawer = false;
     main.innerHTML = `
-    <div class="page-head">
-      <div class="page-title">
-        <h1>设备</h1>
-        <p>局域网直连 · 首次连接需授权码</p>
-      </div>
-      <div class="page-actions">
-        <button class="btn" data-action="refresh"><span data-icon="refresh"></span>刷新</button>
-        <button class="btn btn-primary" data-action="add-device"><span class="btn-plus">+</span> 添加设备</button>
-      </div>
-    </div>
-    <div class="device-layout">
-      <section class="panel device-panel">
-        <div class="panel-head"><div class="panel-title-row"><b>我的设备</b><span class="count" id="deviceCount">0 台</span></div></div>
-        <div class="device-list" id="deviceList"><div class="card-note" style="padding:18px;line-height:1.7">还没有发现设备。请确认另一台电脑也打开了近传并开启「本机被控」，或点击右上角「添加设备」手动输入 IP。</div></div>
-      </section>
-      <section class="panel detail"><div class="empty-state"><div class="empty-ico">${icon('monitor', 24)}</div><b>等待设备上线</b><p>设备发现走局域网 UDP，不需要账号或云端。</p></div></section>
-    </div>`;
+      ${devicePageHeadHtml()}
+      ${deviceLedgerHtml(`<div class="ledger-empty">
+        <div class="empty-ico">${icon('monitor', 24)}</div>
+        <b>等待设备上线</b>
+        <p>请确认另一台电脑也打开了近传并开启「本机被控」，设备会自动出现在这里。</p>
+        <button class="btn btn-primary" data-action="add-device">${icon('plus', 14)} 添加设备</button>
+      </div>`)}`;
     hydrateIcons(main);
     return;
   }
   state.selectedDeviceId = device.id;
   main.innerHTML = `
-    <div class="page-head">
-      <div class="page-title">
-        <h1>设备</h1>
-        <p>局域网直连 · 首次连接需授权码</p>
-      </div>
-      <div class="page-actions">
-        <button class="btn" data-action="refresh"><span data-icon="refresh"></span>刷新</button>
-        <button class="btn btn-primary" data-action="add-device"><span class="btn-plus">+</span> 添加设备</button>
-      </div>
-    </div>
-    <div class="device-layout">
-      <section class="panel device-panel">
-        <div class="panel-head">
-          <div class="panel-title-row"><b>我的设备</b><span class="count" id="deviceCount">${filteredDevices().length} 台</span></div>
-          <label class="search-box">
-            <span data-icon="search"></span>
-            <input id="deviceSearch" type="search" placeholder="搜索设备、员工、资产编号" value="${esc(state.search)}" autocomplete="off">
-          </label>
-          <div class="filter-row">
-            <button class="filter-chip ${state.filter === 'all' ? 'active' : ''}" data-action="filter" data-value="all">全部</button>
-            <button class="filter-chip ${state.filter === 'mine' ? 'active' : ''}" data-action="filter" data-value="mine">我的</button>
-            <button class="filter-chip ${state.filter === 'managed' ? 'active' : ''}" data-action="filter" data-value="managed">我管理的</button>
-            <button class="filter-chip ${state.filter === 'attention' ? 'active' : ''}" data-action="filter" data-value="attention">需要处理</button>
-            <button class="filter-icon" data-action="filter-more" title="更多筛选" aria-label="更多筛选"><span data-icon="filter"></span></button>
-          </div>
-        </div>
-        <div class="device-list" id="deviceList">${deviceListHtml()}</div>
-      </section>
-      <section class="panel detail">${detailHtml(device)}</section>
-    </div>`;
+    ${devicePageHeadHtml()}
+    ${deviceLedgerHtml()}
+    ${state.deviceDrawer ? deviceDrawerHtml(device) : ''}`;
+  main.classList.toggle('inspector-open', !!state.deviceDrawer);
   hydrateIcons(main);
   const input = main.querySelector('#deviceSearch');
   if (input) {
@@ -500,55 +519,96 @@ function filteredDevices() {
   });
 }
 
-function deviceRowHtml(device) {
+function statusDotClass(st) {
+  return st.cls === 'ok' ? 'online' : st.cls === 'session' ? 'session' : st.cls === 'admin' ? 'warn' : st.cls === 'red' ? 'danger' : '';
+}
+
+function deviceLedgerRowHtml(device) {
   const active = device.id === state.selectedDeviceId;
+  const st = statusMeta(device);
+  const dot = statusDotClass(st);
+  const res = device.displays?.[0]?.res || '—';
+  const lab = device.status === 'offline' ? '离线' : st.label;
+  const offline = device.status === 'offline';
   return `
-    <div class="device-row ${active ? 'active' : ''}" data-device-id="${device.id}" role="button" tabindex="0" aria-selected="${active}">
-      <span class="device-ico ${device.status === 'session' ? 'session' : ''}">${icon(device.status === 'offline' ? 'laptop' : 'monitor', 16)}</span>
-      <span class="device-main">
-        <span class="device-name"><b>${esc(device.name)}</b>${device.demo ? '<span class="tag gray">示例</span>' : ''}</span>
-        <span class="device-sub">${esc(device.owner)} · ${esc(device.dept)} · ${esc(device.asset)} <span class="expiry-inline ${expiryClass(device.expirySeconds) === 'red' ? 'red' : expiryClass(device.expirySeconds) === 'admin' ? 'warn' : ''}">· ${device.expirySeconds === null ? '长期' : esc(device.expiryLabel)}</span></span>
-      </span>
-      <span class="device-side">${statusTag(device)}</span>
-      <span class="row-actions"><button class="icon-btn sm" data-action="device-more" data-device-id="${device.id}" title="更多" aria-label="更多">${icon('more', 14)}</button></span>
+    <div class="ledger-row${active ? ' active' : ''}" data-device-id="${device.id}" role="button" tabindex="0" aria-selected="${active}">
+      <div class="lr-device">
+        <span class="lr-ico">${icon(offline ? 'laptop' : 'monitor', 16)}</span>
+        <span class="lr-name"><b>${device.starred ? icon('star', 11) : ''}${esc(device.name)}</b><span>${esc(device.host)} · ${esc(device.owner)}</span></span>
+      </div>
+      <div class="lr-status"><i class="status-dot ${dot}"></i>${esc(lab)}</div>
+      <div class="lr-mono lr-screen">${esc(res)}</div>
+      <div class="lr-mono lr-network">${esc(device.wifi || 'LAN')}</div>
+      <div class="lr-seen">${esc(device.lastSeen)}</div>
+      <div class="lr-action">
+        <button class="link-btn" type="button" data-action="open-session" data-device-id="${device.id}">${offline ? '查看' : '连接'}</button>
+        ${icon('chevron', 13)}
+      </div>
     </div>`;
 }
 
 function deviceListHtml() {
   const items = filteredDevices();
   if (!items.length) {
-    return `<div class="empty-state" style="padding:26px 10px">
+    return `<div class="ledger-empty">
       <div class="empty-ico">${icon('search', 20)}</div>
       <b>没有找到设备</b>
       <p>试试设备名、员工姓名或资产编号。</p>
-      <div class="empty-actions"><button class="btn btn-sm" data-action="clear-search">清除筛选</button></div>
+      <button class="btn btn-sm" data-action="clear-search">清除筛选</button>
     </div>`;
   }
-  const demo = items.filter((d) => d.demo);
-  const starred = items.filter((d) => !d.demo && d.starred);
-  const mine = items.filter((d) => !d.demo && !d.starred && d.relation === 'mine');
-  const managed = items.filter((d) => !d.demo && !d.starred && d.relation === 'managed');
-  const group = (title, list) => list.length ? `<div class="device-group-title"><span>${title}</span><span class="line"></span></div>${list.map(deviceRowHtml).join('')}` : '';
-  return `${group('收藏', starred)}${group('我的设备', mine)}${group('我管理的设备（本机清单）', managed)}${group('示例设备（可删除）', demo)}`;
+  const sorted = [...items].sort((a, b) => Number(!!b.starred) - Number(!!a.starred));
+  return sorted.map(deviceLedgerRowHtml).join('');
+}
+
+function deviceLedgerHtml(emptyHtml = '') {
+  return `<section class="ledger">
+    <div class="ledger-head">
+      <div class="ledger-title"><b>所有设备</b><span id="deviceCount">${filteredDevices().length} 台</span></div>
+      <label class="search-box ledger-search">
+        <span data-icon="search"></span>
+        <input id="deviceSearch" type="search" placeholder="搜索设备、员工或资产编号" value="${esc(state.search)}" autocomplete="off">
+      </label>
+      <div class="filter-row">
+        <button class="filter-chip ${state.filter === 'all' ? 'active' : ''}" data-action="filter" data-value="all">全部</button>
+        <button class="filter-chip ${state.filter === 'mine' ? 'active' : ''}" data-action="filter" data-value="mine">我的</button>
+        <button class="filter-chip ${state.filter === 'managed' ? 'active' : ''}" data-action="filter" data-value="managed">我管理的</button>
+        <button class="filter-chip ${state.filter === 'attention' ? 'active' : ''}" data-action="filter" data-value="attention">需要处理</button>
+        <button class="filter-icon" data-action="filter-more" title="更多筛选" aria-label="更多筛选"><span data-icon="filter"></span></button>
+      </div>
+    </div>
+    <div class="ledger-table">
+      <div class="ledger-columns"><span>设备</span><span>状态</span><span>屏幕</span><span>网络</span><span>上次在线</span><span></span></div>
+      <div id="deviceList">${emptyHtml || deviceListHtml()}</div>
+    </div>
+  </section>`;
 }
 
 function detailHtml(device) {
   const primary = devicePrimary(device);
+  const st = statusMeta(device);
+  const dotClass = st.cls === 'ok' ? 'online' : st.cls === 'session' ? 'session' : st.cls === 'admin' ? 'warn' : st.cls === 'red' ? 'danger' : '';
   return `
     <div class="detail-head">
-      <div class="detail-breadcrumb"><span>设备</span>${icon('chevron', 12)}<span>${esc(device.relation === 'mine' ? '我的设备' : '我管理的设备')}</span></div>
-      <div class="detail-title-row">
+      <div class="detail-head-main">
+        <span class="detail-avatar">${icon(device.status === 'offline' ? 'laptop' : 'monitor', 22)}</span>
         <div class="detail-title">
           <h2>${esc(device.name)} ${adminTag(device)}</h2>
-          <div class="detail-sub"><span>${esc(device.host)}</span><span class="dot-sep">·</span><span>${esc(device.owner)}</span><span class="dot-sep">·</span><span>${esc(device.dept)}</span><span class="dot-sep">·</span><span>${esc(device.asset)}</span><span class="dot-sep">·</span><span>${esc(device.location)}</span></div>
+          <div class="detail-sub">
+            <span class="detail-state"><i class="status-dot ${dotClass}"></i>${esc(st.label)}</span>
+            <span class="dot-sep">·</span><span>${esc(device.host)}</span>
+            <span class="dot-sep">·</span><span>${esc(device.owner)}</span>
+            <span class="dot-sep">·</span><span>${esc(device.dept)}</span>
+            <span class="dot-sep">·</span><span>${esc(device.location)}</span>
+          </div>
           <div class="trust-strip">${device.real
             ? `<span class="trust-item">${icon('wifi', 12)}局域网直连</span><span class="trust-item">${icon('shieldCheck', 12)}WS 会话</span><span class="trust-item">${icon('list', 12)}本机审计</span>`
             : `<span class="trust-item">${icon('shieldCheck', 12)}P2P 直连</span><span class="trust-item">${icon('lock', 12)}TLS 1.3</span><span class="trust-item">${icon('list', 12)}本机审计</span>`}</div>
         </div>
-        <div class="detail-actions">
-          <button class="btn btn-primary" data-action="${primary.action}" data-device-id="${device.id}">${icon(primary.icon, 14)} ${esc(primary.label)}</button>
-          <button class="icon-btn" data-action="device-more" data-device-id="${device.id}" title="更多" aria-label="更多">${icon('more')}</button>
-        </div>
+      </div>
+      <div class="detail-actions">
+        <button class="btn btn-primary" data-action="${primary.action}" data-device-id="${device.id}">${icon(primary.icon, 14)} ${esc(primary.label)}</button>
+        <button class="icon-btn" data-action="device-more" data-device-id="${device.id}" title="更多" aria-label="更多">${icon('more')}</button>
       </div>
     </div>
     <div class="detail-tabs" role="tablist">
@@ -1436,7 +1496,8 @@ function renderSettings() {
 }
 
 function settingsGroup(title, desc, rows) {
-  return `<section class="settings-group"><div class="settings-group-head"><b>${title}</b>${desc ? `<p>${desc}</p>` : ''}</div>${rows}</section>`;
+  const body = Array.isArray(rows) ? rows.join('') : rows;
+  return `<section class="settings-group"><div class="settings-group-head"><b>${title}</b>${desc ? `<p>${desc}</p>` : ''}</div>${body}</section>`;
 }
 function settingRow(label, desc, control) {
   return `<div class="settings-row"><div class="settings-label"><b>${label}</b>${desc ? `<span>${desc}</span>` : ''}</div><div class="settings-value">${control}</div></div>`;
@@ -2050,6 +2111,7 @@ function handleCommandAction(action) {
 function openSession(deviceId) {
   const device = deviceById(deviceId);
   if (!device) return;
+  state.deviceDrawer = false;
   // 角色只属于本次「添加设备→连接」流程；任何提前返回（离线/锁屏/取消）都要清掉
   const pendingRole = state.pendingRole;
   state.pendingRole = null;
@@ -2274,8 +2336,8 @@ function renderSession() {
         </div>
         <div class="session-hud">
           ${s.real
-            ? `<span class="hud-item"><span class="hud-dot"></span>LAN</span><span class="hud-item" id="hudRtt">${s.rtt === null || s.rtt === undefined ? '— ms' : `${s.rtt} ms`}</span><span class="hud-item" id="hudFps">${s.fps ? `${s.fps} fps` : '— fps'}</span><span class="hud-item" id="hudCapture">${captureLabel}</span><span class="hud-item">${esc(s.qualityLabel)}</span>`
-            : `<span class="hud-item ${s.banner?.type === 'warn' ? 'warn' : ''}"><span class="hud-dot" style="${s.banner?.type === 'warn' ? 'background:#fbbf24' : ''}"></span>18 ms</span><span class="hud-item">60 fps</span><span class="hud-item">7.2 Mbps</span><span class="hud-item">${esc(s.qualityLabel)}</span>`}
+            ? `<span class="hud-item"><span class="hud-dot"></span>LAN</span><span class="hud-item" data-session-duration>${formatDuration(s.duration)}</span><span class="hud-item" id="hudRtt">${s.rtt === null || s.rtt === undefined ? '— ms' : `${s.rtt} ms`}</span><span class="hud-item" id="hudFps">${s.fps ? `${s.fps} fps` : '— fps'}</span><span class="hud-item" id="hudCapture">${captureLabel}</span>`
+            : `<span class="hud-item ${s.banner?.type === 'warn' ? 'warn' : ''}"><span class="hud-dot" style="${s.banner?.type === 'warn' ? 'background:#fbbf24' : ''}"></span>18 ms</span><span class="hud-item" data-session-duration>${formatDuration(s.duration)}</span><span class="hud-item">60 fps</span><span class="hud-item">7.2 Mbps</span>`}
         </div>
         <span class="spacer"></span>
         <div class="session-actions">
@@ -2297,14 +2359,6 @@ function renderSession() {
         <div class="session-drop" id="sessionDrop" hidden><div class="session-drop-box">${icon('upload', 26)}<b>松开即可发送到远端</b><span>文件保存到对方的「下载/NearSend」</span></div></div>
         ${s.drawer ? sessionDrawerHtml(device, s) : ''}
         <div class="session-hint">${s.real ? '拖入文件直接发送 · Ctrl+Alt+Shift+F 全屏 · Ctrl+Alt+Shift+E 结束会话' : '键盘已捕获 · Ctrl+Alt+Shift+K 释放 · 右键发送到远端'}</div>
-      </div>
-      <div class="session-bottom">
-        <span class="ok">● 已连接</span>
-        <span data-session-duration>${formatDuration(s.duration)}</span>
-        <span>${esc(s.qualityLabel)}</span>
-        <span>${s.real ? '局域网直连' : '演示会话'}</span>
-        <span class="spacer"></span>
-        <span>${s.real ? '拖入文件即可发送 · 保护隐私请及时结束会话' : 'P2P 直连 · TLS 1.3 · 本机审计'}</span>
       </div>
     </div>`;
   hydrateIcons(root);
@@ -2374,7 +2428,7 @@ function sessionDrawerHtml(device, s) {
       ${allowed ? `<div class="dropzone" id="dropzone" data-session-action="pick-file" style="cursor:pointer">${icon('upload', 20)}<div>把文件拖到这里，或点击选择发送到 ${esc(device.name)}</div><div style="margin-top:3px;font-size:9px">发送到被控端「下载/NearSend」；也可直接把整个文件拖进远程画面</div></div>` : `<div class="perm-summary" style="background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.35);color:#fde68a">当前授权未开启文件传输。管理员默认关闭；请让设备所有者授权。</div>`}
       <div class="section-title" style="margin-top:13px;font-size:11px">传输队列</div>
       ${s.files.length ? s.files.map(fileRowHtml).join('') : `<div class="card-note" style="color:#8e9cb0">还没有文件。点击上方区域选择文件。</div>`}
-      <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm" data-session-action="pick-file">${icon('upload', 13)} 选择文件</button><button class="btn btn-sm" data-session-action="get-remote-file">${icon('download', 13)} 从远端取回</button><button class="btn btn-sm" data-session-action="file-open">${icon('folder', 13)} 打开下载目录</button></div>
+      <div class="file-actions"><button class="btn btn-sm" data-session-action="pick-file">${icon('upload', 13)} 选择文件</button><button class="btn btn-sm" data-session-action="get-remote-file">${icon('download', 13)} 从远端取回</button><button class="btn btn-sm" data-session-action="file-open">${icon('folder', 13)} 打开下载目录</button></div>
       <div class="card-note" style="color:#8e9cb0;margin-top:12px">本机 → 被控端：拖入或选择文件。被控端发来的文件收完后，可把文件行直接拖到本机资源管理器保存。</div>
     </div></aside>`;
   }
@@ -3258,7 +3312,7 @@ function bindSession() {
     if (!state.windowFullscreen || state.menuEl) return;
     const shell = root.querySelector('.session-shell');
     if (!shell) return;
-    const show = e.clientY <= 56 || e.clientY >= window.innerHeight - 10;
+    const show = e.clientY <= 56;
     state.chromeVisible = show;
     shell.classList.toggle('chrome-visible', show);
   }, { passive: true });
@@ -3272,6 +3326,7 @@ function bindSession() {
 /* ---------- main / shell bindings ---------- */
 function selectDevice(id) {
   state.selectedDeviceId = id;
+  state.deviceDrawer = true;
   if (state.view !== 'devices') setView('devices'); else renderDevices();
 }
 function confirmRemoveDevice(device) {
@@ -3327,6 +3382,7 @@ function handleMainClick(e) {
     else if (a === 'clear-search') { state.search = ''; state.filter = 'all'; renderDevices(); }
     else if (a === 'detail-tab') { state.detailTab = act.dataset.value; renderDevices(); }
     else if (a === 'device-more') { e.stopPropagation(); showDeviceMenu(act, device); }
+    else if (a === 'close-device-drawer') { state.deviceDrawer = false; renderDevices(); }
     else if (a === 'open-session') { openSession(act.dataset.deviceId || device.id); }
     else if (a === 'resume-session') { if (state.session) renderSession(); else openSession(device.id); }
     else if (a === 'offline-help') openOfflineModal(device);

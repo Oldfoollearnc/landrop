@@ -1,7 +1,7 @@
 {
   "name": "nearsend",
   "productName": "NearSend",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "近传 3.0：局域网远程工位 + 群聊。Windows 控制端直连工位电脑，保留手机扫码群聊、文件传输与团队协作",
   "main": "src/main/main.js",
   "author": {

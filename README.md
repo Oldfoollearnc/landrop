@@ -1,14 +1,15 @@
 # 近传 · NearSend
 
-> 产品介绍页：https://oldfoollearnc.github.io/landrop/ · 发布页：https://github.com/Oldfoollearnc/landrop/releases/tag/v3.0.0
+> 产品介绍页：https://oldfoollearnc.github.io/landrop/ · 发布页：https://github.com/Oldfoollearnc/landrop/releases/tag/v3.1.0
 
 **同一个 Wi-Fi 下，多台手机和电脑扫码加入一个局域网群聊。** 不登录、不上云、不压缩，也不经过任何中转服务器。
 
-> **3.0 新增：近传 · 远程工位。** Windows 控制端可以直接连回自己的工位电脑：局域网发现、6 位码配对、真实屏幕与键鼠、剪贴板、文件发送、本机被控、同事私聊；原有群聊完整保留。运行 `npm start` 打开统一工作台；群聊从左侧「消息」进入。
+> **3.1 更新：新工作台与远控体验。** Windows 控制端可以直接连回自己的工位电脑：局域网发现、6 位码配对、真实屏幕与键鼠、剪贴板、文件发送、本机被控、同事私聊；原有群聊完整保留。运行 `npm start` 打开统一工作台；群聊从左侧「消息」进入。
 
-## 近传 3.0 · 远程工位
+## 近传 3.1 · 远程工位
 
 - **一个应用，两个工作区**：设备控制台 + 团队群聊；群聊继续兼容手机扫码/网页端。
+- **新工作台 3.1**：顶部文字导航、全宽设备清单、点设备打开右侧检查器；浅色/深色一致，详情不再常驻占位。
 - **局域网 P2P**：设备发现走 UDP，屏幕/输入/剪贴板/文件走控制端与被控端直连；没有 Hub、没有云端中转。广播被禁用时可手动输入 `IP:端口`。
 - **真实远控**：控制端采集工位桌面画面，鼠标/键盘通过 Windows `SendInput` 注入；Windows GDI + JPEG，自动按物理分辨率采集、不放大，支持 1080p / 2K / 原画 4K；本地光标即时跟随，避免两个鼠标；HUD 显示 RTT 与实时帧率。
 - **本机被控**：右上角笔记本图标 / `Ctrl+Shift+A` 打开本机被控，显示 6 位授权码、IP、端口、当前会话；可暂停/恢复、结束会话。会话开始/结束有 Windows 通知，托盘显示“正在被控制”。
@@ -31,12 +32,12 @@ npm start          # 统一工作台（远程工位 + 群聊）
 npm run dist       # NSIS + Portable（Windows x64）
 ```
 
-- 3.0 内测发布：<https://github.com/Oldfoollearnc/landrop/releases/tag/v3.0.0>
-- 安装包：`NearSend-3.0.0-Setup.exe` / `NearSend-3.0.0-Portable.exe`；校验 `SHA256SUMS.txt`。
+- 3.1 内测发布：<https://github.com/Oldfoollearnc/landrop/releases/tag/v3.1.0>
+- 安装包：`NearSend-3.1.0-Setup.exe` / `NearSend-3.1.0-Portable.exe`；校验 `SHA256SUMS.txt`。
 
 - 需要 Windows 10/11 x64；同一 Wi-Fi/VLAN；输入注入组件 `assets/remote-input.exe` 已随包分发。
 - 真实锁屏/UAC 安全桌面需要 Windows 服务，当前版本只覆盖已登录桌面；发布页已列出限制。
-- 远程传输层为 Windows GDI + WS + JPEG（1080p 约 15fps）；WebRTC/2K60 是后续迭代；不承诺公网、WoL、4K、手机控制端。
+- 远程传输层为 Windows GDI + WS + JPEG（1080p / 2K / 原画 4K，按物理分辨率采集不放大）；WebRTC 是后续迭代；不承诺公网、WoL、手机控制端。
 - 端口：UDP 47822 发现、UDP 47823 私聊、TCP 47820–47839 会话；防火墙需放通。
 
 ### 目录
@@ -204,7 +205,7 @@ npm run dist       # NSIS + Portable（Windows x64）
 
 ## 安装
 
-> 桌面安装包当前为 **3.0.0**（`dist/NearSend-3.0.0-Setup.exe` / Portable）。下文 2.2.0 章节保留为群聊/Android 的历史说明；Android 客户端仍为 2.2.0，与 3.0 桌面端群聊协议兼容。
+> 桌面安装包当前为 **3.1.0**（`dist/NearSend-3.1.0-Setup.exe` / Portable）。下文 2.2.0 章节保留为群聊/Android 的历史说明；Android 客户端仍为 2.2.0，与 3.1 桌面端群聊协议兼容。
 
 ### Android
 
