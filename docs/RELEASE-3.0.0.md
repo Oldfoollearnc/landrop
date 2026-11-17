@@ -33,6 +33,7 @@
 
 - `NearSend-3.0.0-Setup.exe`（NSIS，x64）
 - `NearSend-3.0.0-Portable.exe`（便携版）
+- `NearSend-Android-2.2.0.apk`（Android 团队群聊客户端；不含远程控制功能，群聊协议与 3.0 桌面端兼容）
 - Windows 10/11 x64；输入注入与 GDI 采集组件随包分发（`remote-input.exe`、`remote-capture.exe`）。
 
 ## 验证
